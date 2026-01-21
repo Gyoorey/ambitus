@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ambitus"
+version = "0.1.0"
+description = "A CLI tool for video analysis of the ambitus rat experiments"
+authors = [
+    { name = "Gyorgy Kalmar", email = "gyooorey@gmail.com" }
+]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent"
+]
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "click",
+    "scipy",
+    "matplotlib",
+    "scikit-image",
+]
+
+[project.scripts]
+ambitus = "cli:cli"
+
+[tool.setuptools]
+package-dir = {"" = "ambitus"}
+
+[tool.setuptools.packages.find]
+where = ["ambitus"]
