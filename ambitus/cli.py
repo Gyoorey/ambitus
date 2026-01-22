@@ -1,5 +1,6 @@
 import click
 import cv2
+from process_video import process_video
 from matplotlib import pyplot as plt
 
 
@@ -11,8 +12,7 @@ def cli():
 @cli.command()
 @click.argument("video_path", type=click.Path(exists=True))
 @click.option("--show", is_flag=True, help="Show the loaded image")
-@click.option("--traj_show", is_flag=True, help="Detect the rat and show trajectory on the loaded video")
-def load_video(video_path, show, traj_show):
+def load_video(video_path, show):
     """Load a video and display the first frame."""
     cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
 
@@ -40,3 +40,18 @@ def load_video(video_path, show, traj_show):
         plt.show()
 
     click.echo("Video loaded successfully.")
+
+
+@cli.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--show", is_flag=True, help="Detect the rat and show trajectory on the loaded video")
+@click.option("--skip-seconds", default=0.0, help="Seconds to skip at the start of the video")
+@click.option("--min-area", default=200, help="Minimum area for rat detection")
+def analyze(path, show, skip_seconds, min_area):
+    """ Process the video to detect and track rat trajectories."""
+    process_video(
+        video_path=path,
+        show_traj=show,
+        skip_seconds=skip_seconds,
+        min_area=min_area,
+    )
