@@ -33,5 +33,5 @@ ffmpeg -i ambitus/data/LE_17_1_45.mpg -vf "yadif,scale=768:576,setsar=1" -pix_fm
 Run a basic test command to verify everything works:  
 ambitus load-video ambitus/data/45.mp4 --show
 
-Process video and plot and save trajectory:
+Process video and plot and save trajectory:  
 ambitus analyze ambitus/data/45.mp4 --show --skip-seconds 0.0
