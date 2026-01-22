@@ -11,7 +11,8 @@ def cli():
 @cli.command()
 @click.argument("video_path", type=click.Path(exists=True))
 @click.option("--show", is_flag=True, help="Show the loaded image")
-def load_video(video_path, show):
+@click.option("--traj_show", is_flag=True, help="Detect the rat and show trajectory on the loaded video")
+def load_video(video_path, show, traj_show):
     """Load a video and display the first frame."""
     cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
 
