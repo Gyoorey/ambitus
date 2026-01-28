@@ -45,13 +45,17 @@ def load_video(video_path, show):
 @cli.command()
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--show", is_flag=True, help="Detect the rat and show trajectory on the loaded video")
-@click.option("--skip-seconds", default=0.0, help="Seconds to skip at the start of the video")
-@click.option("--min-area", default=200, help="Minimum area for rat detection")
-def analyze(path, show, skip_seconds, min_area):
+@click.option("--debug", is_flag=True, help="Show debug view")
+@click.option("--skip-seconds", default=0.0, help="Seconds to skip at the start")
+@click.option("--min-area", default=200, help="Minimum area")
+@click.option("--method", type=click.Choice(['simple','kf', 'of'], case_sensitive=False), default='simple', help="Tracking method: Kalman Filter (kf) or Optical Flow (of)")
+def analyze(path, show, debug, skip_seconds, min_area, method):
     """ Process the video to detect and track rat trajectories."""
     process_video(
         video_path=path,
+        method=method,
         show_traj=show,
+        debug=debug,
         skip_seconds=skip_seconds,
         min_area=min_area,
     )
