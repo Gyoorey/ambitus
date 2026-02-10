@@ -48,7 +48,7 @@ def load_video(video_path, show):
 @click.option("--debug", is_flag=True, help="Show debug view")
 @click.option("--skip-seconds", default=0.0, help="Seconds to skip at the start")
 @click.option("--min-area", default=200, help="Minimum area")
-@click.option("--method", type=click.Choice(['simple','kf', 'of'], case_sensitive=False), default='simple', help="Tracking method: Kalman Filter (kf) or Optical Flow (of)")
+@click.option("--method", type=click.Choice(['simple', 'dof', 'kf', 'of'], case_sensitive=False), default='simple', help="Tracking method: Kalman Filter (kf) or Optical Flow (of)")
 def analyze(path, show, debug, skip_seconds, min_area, method):
     """ Process the video to detect and track rat trajectories."""
     process_video(

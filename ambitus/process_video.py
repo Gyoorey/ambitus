@@ -4,7 +4,7 @@ import json
 import os
 import csv
 
-# --- KONSTANSOK ---
+# --- CONSTANTS ---
 MAX_JUMP_DIST = 100 
 
 class SimpleRatTracker:
@@ -13,7 +13,6 @@ class SimpleRatTracker:
         self.missed_frames = 0
         self.collision_detected = False
         
-        # Ezek hiányoztak, de kellenek a get_best_contour függvénynek:
         self.is_initialized = False
         self.last_valid_pos = None 
         
@@ -24,8 +23,6 @@ class SimpleRatTracker:
         if measured_coords is not None:
             self.missed_frames = 0
             
-            # Frissítjük az állapotot, hogy a get_best_contour tudja, 
-            # hogy már követünk valamit (Distance Gating aktiválása)
             self.is_initialized = True
             self.last_valid_pos = measured_coords
             
@@ -37,6 +34,32 @@ class SimpleRatTracker:
     def get_state_debug(self):
         return 0.0, 0.0, 0.0
 
+
+class DenseRatTracker:
+    def __init__(self, inner_poly, outer_poly):
+        self.name = "Dense Optical Flow" # Print this in debug
+        self.missed_frames = 0
+        self.collision_detected = False
+        
+        self.is_initialized = False
+        self.last_valid_pos = None 
+        
+        self.inner_poly = inner_poly
+        self.outer_poly = outer_poly
+
+    def update(self, measured_coords, frame_gray=None):
+        # This is also just "Pass-through", does not predict like Simple
+        if measured_coords is not None:
+            self.missed_frames = 0
+            self.is_initialized = True
+            self.last_valid_pos = measured_coords
+            return measured_coords
+        else:
+            self.missed_frames += 1
+            return None
+
+    def get_state_debug(self):
+        return 0.0, 0.0, 0.0
 
 class KalmanRatTracker:
     def __init__(self, inner_poly, outer_poly):
@@ -60,7 +83,7 @@ class KalmanRatTracker:
         if cv2.pointPolygonTest(self.outer_poly, (float(x), float(y)), False) < 0: return False 
         return True
 
-    def update(self, measured_coords, frame_gray=None): # frame_gray a kompatibilitás miatt kell
+    def update(self, measured_coords, frame_gray=None): # frame_gray needed for compatibility
         pred = self.kalman.predict()
         pred_x, pred_y = int(pred[0, 0]), int(pred[1, 0])
         self.collision_detected = False
@@ -115,15 +138,15 @@ class OpticalFlowRatTracker:
         self.inner_poly = inner_poly
         self.outer_poly = outer_poly
         
-        # Optical Flow változók
+        # Optical Flow variables
         self.prev_gray = None
-        self.p0 = None # Követendő pontok
+        self.p0 = None # Points to track
         
-        # Lucas-Kanade paraméterek
+        # Lucas-Kanade parameters
         self.lk_params = dict(winSize=(15, 15), maxLevel=2,
                               criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
         
-        # Feature keresés paraméterek (GoodFeaturesToTrack)
+        # Feature search parameters (GoodFeaturesToTrack)
         self.feature_params = dict(maxCorners=20, qualityLevel=0.3, minDistance=7, blockSize=7)
 
     def check_geometric_constraints(self, x, y):
@@ -133,24 +156,24 @@ class OpticalFlowRatTracker:
 
     def update(self, measured_coords, frame_gray):
         """
-        Ha van measured_coords (MOG2): Újrainicializáljuk a pontokat a patkányon.
-        Ha nincs: Optical Flow-val követjük a régi pontokat.
+        If measured_coords (MOG2): Reinitialize the points on the rat.
+        If not: Track old points with Optical Flow.
         """
         self.collision_detected = False
         current_pos = None
 
-        # 1. ESET: Van erős detektálás (MOG2) -> Ez a "Ground Truth"
+        # CASE 1: Strong detection (MOG2) -> This is the "Ground Truth"
         if measured_coords is not None:
             self.last_valid_pos = measured_coords
             self.missed_frames = 0
             self.is_initialized = True
             current_pos = measured_coords
             
-            # Keressünk új követési pontokat a patkány körül, hogy felkészüljünk a következő (esetleg hiányos) frame-re
-            # Csinálunk egy kis maszkot a patkány köré
+            # Search for new tracking points around the rat so we can prepare for the next (possibly incomplete) frame
+            # Create a small mask around the rat
             mask_roi = np.zeros_like(frame_gray)
             cx, cy = measured_coords
-            # Kb 40x40-es doboz a patkány körül feature kereséshez
+            # About 40x40 box around the rat for feature search
             cv2.circle(mask_roi, (cx, cy), 20, 255, -1) 
             
             self.p0 = cv2.goodFeaturesToTrack(frame_gray, mask=mask_roi, **self.feature_params)
@@ -158,58 +181,58 @@ class OpticalFlowRatTracker:
             
             return current_pos
 
-        # 2. ESET: Nincs detektálás -> Optical Flow
+        # CASE 2: No detection -> Optical Flow
         if self.is_initialized and self.p0 is not None and len(self.p0) > 0:
             self.missed_frames += 1
             
-            # Kiszámoljuk az elmozdulást
+            # Calculate displacement
             p1, st, err = cv2.calcOpticalFlowPyrLK(self.prev_gray, frame_gray, self.p0, None, **self.lk_params)
             
-            # Kiválasztjuk a jó pontokat (amiket sikerült követni)
+            # Select good points (which were successfully tracked)
             if p1 is not None:
                 good_new = p1[st == 1]
                 good_old = self.p0[st == 1]
                 
                 if len(good_new) > 0:
-                    # Kiszámoljuk az átlagos elmozdulást (dx, dy)
+                    # Calculate average displacement (dx, dy)
                     displacement = good_new - good_old
                     dx = np.median(displacement[:, 0])
                     dy = np.median(displacement[:, 1])
                     
-                    # Ha nagyon kevés a pont, vagy ugrál, feltételezzük a 0 mozgást (stop)
+                    # If very few points or jumping, assume zero motion (stop)
                     if abs(dx) < 0.5: dx = 0
                     if abs(dy) < 0.5: dy = 0
                     
-                    # Frissítjük a pozíciót
+                    # Update position
                     old_x, old_y = self.last_valid_pos
                     new_x = int(old_x + dx)
                     new_y = int(old_y + dy)
                     
-                    # Geometriai ellenőrzés
+                    # Geometric constraint check
                     if self.check_geometric_constraints(new_x, new_y):
                         self.last_valid_pos = (new_x, new_y)
                         current_pos = (new_x, new_y)
                         
-                        # Frissítjük a pontokat a köv. körre
+                        # Update points for next iteration
                         self.p0 = good_new.reshape(-1, 1, 2)
                         self.prev_gray = frame_gray.copy()
                     else:
                         self.collision_detected = True
-                        # Falnak mentünk -> Megtartjuk a régit
+                        # Hit wall -> Keep old position
                         current_pos = self.last_valid_pos
                 else:
-                    # Elvesztettük a pontokat
-                    current_pos = self.last_valid_pos # Jobb híján maradunk helyben
+                    # Lost the points
+                    current_pos = self.last_valid_pos # Best we can do is stay in place
             else:
                 current_pos = self.last_valid_pos
 
             if self.missed_frames > 50: return None
             return current_pos
 
-        return None # Még nincs inicializálva
+        return None # Not initialized yet
 
     def get_state_debug(self):
-        # Az OF nem tárol sebességet közvetlenül, de visszaadhatunk 0-t vagy dummy adatot
+        # OF does not store velocity directly, but we can return 0 or dummy data
         return 0.0, 0.0, 0.0
 
 
@@ -235,9 +258,9 @@ def save_to_csv(data, filename):
             writer = csv.writer(file, delimiter=';')
             writer.writerow(["Time_Sec", "X", "Y"])
             writer.writerows(data)
-        print(f"\nSikeres mentés: {filename} ({len(data)} pont)")
+        print(f"\nSuccessful save: {filename} ({len(data)} points)")
     except Exception as e:
-        print(f"Hiba a mentéskor: {e}")
+        print(f"Error during save: {e}")
 
 def get_best_contour(contours, tracker, inner_pts_array, min_area):
     valid_candidates = []
@@ -272,12 +295,12 @@ def get_best_contour(contours, tracker, inner_pts_array, min_area):
 
 def clean_trajectory(data, max_drift_dist=50):
     """
-    Kiszűri a Kalman-filter "túllövéseit" (overshoot).
-    data formátum: [(time, x, y, is_predicted), ...]
+    Filters out Kalman filter "overshoots".
+    data format: [(time, x, y, is_predicted), ...]
     
-    Logika: Ha van egy predikált szakasz (csupa True), megnézzük, honnan indult
-    és hova érkezett vissza a valós mérés. Ha a patkány valójában nem mozdult el
-    (start és end közel van), de a predikció elszállt, akkor töröljük a predikciót.
+    Logic: If there is a predicted segment (all True), we check where it started
+    and where the real measurement returned. If the rat actually didn't move much
+    (start and end are close), but the prediction drifted, then delete the prediction.
     """
     if not data: return []
     
@@ -286,67 +309,67 @@ def clean_trajectory(data, max_drift_dist=50):
     i = 0
     
     while i < n:
-        # Ha ez egy mért pont (nem predikció), megtartjuk
+        # If this is a measured point (not prediction), keep it
         if not data[i][3]: # is_predicted == False
             cleaned_data.append(data[i])
             i += 1
             continue
             
-        # Ha predikciót találunk, keressük meg a szakasz végét
+        # If we find a prediction, find the end of the segment
         j = i
-        while j < n and data[j][3]: # Amíg predikció
+        while j < n and data[j][3]: # While prediction
             j += 1
             
-        # Most az i-től (j-1)-ig tart a predikált szakasz.
-        # A j. elem (ha létezik) az első újabb VALÓS mérés.
-        # Az (i-1). elem az utolsó VALÓS mérés.
+        # Now the segment runs from i to (j-1).
+        # The j-th element (if it exists) is the first new REAL measurement.
+        # The (i-1)-th element is the last REAL measurement.
         
         start_valid = data[i-1] if i > 0 else None
         end_valid = data[j] if j < n else None
         
         keep_segment = True
         
-        # Csekkoljuk a "driftet"
+        # Check the "drift"
         if start_valid and end_valid:
             print("Start Valid:", start_valid, "End Valid:", end_valid)
             sx, sy = start_valid[1], start_valid[2]
             ex, ey = end_valid[1], end_valid[2]
             
-            # Tényleges elmozdulás a valóságban
+            # Actual displacement in reality
             real_displacement = np.sqrt((ex-sx)**2 + (ey-sy)**2)
             
-            # Ha a patkány alig mozdult a valóságban, de a tracker sokat jósolt,
-            # akkor ez csak egy "megállás közbeni sodródás". Eldobjuk.
+            # If the rat barely moved in reality, but the tracker predicted much,
+            # then this is just "drift during a stop". Discard it.
             if real_displacement < max_drift_dist:
                 keep_segment = False
         
-        # Ha nincs vége a szakasznak (videó vége), vagy nincs eleje,
-        # akkor dönthetünk úgy, hogy eldobjuk a bizonytalan véget.
+        # If there's no end to the segment (end of video), or no beginning,
+        # then we can decide to discard the uncertain end.
         elif start_valid and not end_valid:
              print("No end valid point; discarding trailing drift segment.")
-             keep_segment = False # A videó végén kiszaladt a falnak -> kuka
+             keep_segment = False # Drifted into wall at end of video -> trash
              
         if keep_segment:
             print("Keeping drift segment from", i, "to", j-1)
-            # Megtartjuk a pontokat (esetleg simíthatnánk is, de most csak másoljuk)
+            # Keep the points (optionally we could smooth, but just copy for now)
             for k in range(i, j):
                 cleaned_data.append(data[k])
         else:
             print("Discarding drift segment from", i, "to", j-1)
-            # Nem tartjuk meg (töröljük a driftet). 
-            # Opcionális: interpolálhatnánk a helyét (start és end közé),
-            # de a "megállás" esetén a törlés a helyes, mert akkor nem rajzol vonalat.
+            # Don't keep (delete the drift). 
+            # Optional: we could interpolate between start and end,
+            # but for "stopping" case, deletion is correct because it won't draw a line.
             pass
             
-        i = j # Folytatás a szakasz után
+        i = j # Continue after the segment
 
     return cleaned_data
 
-# --- DEBUG NÉZET ÉPÍTŐ ---
+# --- DEBUG VIEW BUILDER ---
 def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
     """
-    Összeállítja a kombinált képet:
-    [ Eredeti Videó ] [ Maszk ]
+    Assembles the combined image:
+    [ Original Video ] [ Mask ]
                       [ Info Panel ]
     """
     h, w = frame.shape[:2]
@@ -356,7 +379,11 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
     target_h = int(h / 2)
     mask_resized = cv2.resize(mask_bgr, (panel_width, target_h))
     cv2.rectangle(mask_resized, (0,0), (panel_width-1, target_h-1), (100,100,100), 2)
-    cv2.putText(mask_resized, "MOG2 Mask", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+    
+    # DYNAMIC CAPTION
+    # If tracker name is Dense OF, then different caption
+    mask_label = "Flow Magnitude (Thresh)" if tracker.name == "Dense Optical Flow" else "MOG2 Mask"
+    cv2.putText(mask_resized, mask_label, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
 
     info_panel = np.zeros((h - target_h, panel_width, 3), dtype=np.uint8)
     
@@ -375,8 +402,9 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
     if missed > 40:
         status_color = (0, 0, 255)
         status_text = "LOST"
-    # Simple tracker esetén nincs predikció, tehát ha missed > 0, az simán "NO DETECTION"
-    if tracker.name == "Simple (MOG2)" and missed > 0:
+
+# For Simple and Dense trackers there is no prediction, so missed > 0 means NO DETECTION
+    if (tracker.name.startswith("Simple") or tracker.name.startswith("Dense")) and missed > 0:
         status_text = "NO DETECTION"
         status_color = (0, 0, 255)
         
@@ -384,7 +412,7 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
         status_text = "WALL COLLISION"
         status_color = (0, 0, 255)
 
-    cv2.putText(info_panel, f"METHOD: {tracker.name}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2) # ÚJ: Módszer kiírása
+    cv2.putText(info_panel, f"METHOD: {tracker.name}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
     y_off += line_h
     cv2.putText(info_panel, f"STATUS: {status_text}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
     y_off += line_h
@@ -393,15 +421,19 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
     cv2.putText(info_panel, meas_str, (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 200), 1)
     y_off += line_h
     
-    # ITT A VÁLTOZÁS: tracker.name használata
     track_str = f"{tracker.name}: {final_pos}" if final_pos else f"{tracker.name}: None"
     cv2.putText(info_panel, track_str, (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 255), 1)
     y_off += line_h * 2
     
     cv2.putText(info_panel, f"Speed: {speed:.2f} px/fr", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 255, 200), 1)
     y_off += line_h
-    # ... (maradék változatlan) ...
+    cv2.putText(info_panel, f"Vel X: {vx:.2f}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
+    y_off += line_h
+    cv2.putText(info_panel, f"Vel Y: {vy:.2f}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
+    y_off += line_h * 2
     
+    cv2.putText(info_panel, f"Missed Frames: {missed}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 100, 255), 1)
+
     right_sidebar = np.vstack([mask_resized, info_panel])
     if right_sidebar.shape[0] != h:
         right_sidebar = cv2.resize(right_sidebar, (panel_width, h))
@@ -411,7 +443,7 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
 
 def process_video(video_path, method='kf', show_traj=False, debug=False, skip_seconds=0.0, min_area=200):
     """
-    method: 'kf' (Kalman Filter) vagy 'of' (Optical Flow)
+    method: 'kf' (Kalman Filter) or 'of' (Optical Flow)
     """
     config = load_config()
     if config is None: return
@@ -434,9 +466,12 @@ def process_video(video_path, method='kf', show_traj=False, debug=False, skip_se
     roi_mask = create_poly_mask(config, first_frame.shape)
 
     clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
-    fgbg = cv2.createBackgroundSubtractorMOG2(history=5000, varThreshold=30, detectShadows=False)
+    # Background subtractor (only needed if NOT in 'dof' mode)
+    fgbg = None
+    if method != 'dof':
+        fgbg = cv2.createBackgroundSubtractorMOG2(history=5000, varThreshold=30, detectShadows=False)
     
-    # --- TRACKER KIVÁLASZTÁSA ---
+    # --- TRACKER SELECTION ---
     if method == 'of':
         print("Using Optical Flow Tracker")
         tracker = OpticalFlowRatTracker(inner_poly=inner_pts_array, outer_poly=outer_pts_array)
@@ -446,15 +481,23 @@ def process_video(video_path, method='kf', show_traj=False, debug=False, skip_se
     elif method == 'kf':
         print("Using Kalman Filter Tracker")
         tracker = KalmanRatTracker(inner_poly=inner_pts_array, outer_poly=outer_pts_array)
+    elif method == 'dof':
+        print("Using Dense Optical Flow Detector")
+        tracker = DenseRatTracker(inner_poly=inner_pts_array, outer_poly=outer_pts_array)       
     # ----------------------------
 
     trajectory_data = []
     frame_counter = start_frame
     visualization_active = show_traj or debug
 
-    print(f"Feldolgozás indítása {skip_seconds} másodperctől...")
+    # Dense Optical Flow needs previous frame in grayscale
+    prev_gray_dof = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
+    prev_gray_dof = clahe.apply(prev_gray_dof)
+    prev_gray_dof = cv2.GaussianBlur(prev_gray_dof, (7, 7), 0)
+
+    print(f"Starting processing from {skip_seconds} seconds...")
     if not visualization_active:
-        print("Gyors mód aktív...")
+        print("Fast mode active...")
 
     while True:
         ret, frame = cap.read()
@@ -462,16 +505,45 @@ def process_video(video_path, method='kf', show_traj=False, debug=False, skip_se
 
         frame_counter += 1
         if not visualization_active and frame_counter % 100 == 0:
-            print(f"\rFeldolgozva: {frame_counter}/{total_frames} frame", end="")
+            print(f"\rProcessed: {frame_counter}/{total_frames} frames", end="")
 
         current_time_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
         timestamp_sec = current_time_ms / 1000.0
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray = clahe.apply(gray)
-        gray_blurred = cv2.GaussianBlur(gray, (7, 7), 0) # MOG2-nek
+        gray_blurred = cv2.GaussianBlur(gray, (7, 7), 0) # For MOG2
 
-        fgmask = fgbg.apply(gray_blurred, learningRate=0.0005)
+        # --- DETECTION LOGIC SELECTION ---
+        fgmask = None
+
+        if method == 'dof':
+            # DENSE OPTICAL FLOW DETECTOR
+            # 1. Flow calculation (Farneback)
+            # cv2.calcOpticalFlowFarneback(prev, next, flow, pyr_scale, levels, winsize, iterations, poly_n, poly_sigma, flags)
+            # winsize=15 (averaging window, smaller = better detail, but more noise)
+            # iterations=3 (more iterations = more accurate, slower)
+            # poly_n=5, poly_sigma=1.1 (sharper edges, less blur)
+            flow = cv2.calcOpticalFlowFarneback(prev_gray_dof, gray_blurred, None, 
+                                                0.5, 3, 15, 3, 5, 1.2, 0)
+            
+            # 2. Magnitude calculation (Speed)
+            mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+            
+            # 3. Thresholding: Anything moving faster than 2 pixels/frame is the rat
+            # This 2.0 can be tuned for sensitivity
+            _, fgmask = cv2.threshold(mag, 2.5, 255, cv2.THRESH_BINARY)
+            fgmask = fgmask.astype(np.uint8)
+            
+            # Update previous frame for next iteration
+            prev_gray_dof = gray_blurred.copy()
+            
+        else:
+            # MOG2 DETECTOR (Traditional)
+            fgmask = fgbg.apply(gray_blurred, learningRate=0.0005)
+
+        # ------------------------------------
+
         fgmask = cv2.bitwise_and(fgmask, fgmask, mask=roi_mask)
 
         kernel = np.ones((3, 3), np.uint8)
@@ -482,8 +554,8 @@ def process_video(video_path, method='kf', show_traj=False, debug=False, skip_se
 
         best_contour, measured_coords = get_best_contour(contours, tracker, inner_pts_array, min_area)
         
-        # FONTOS: Az update most már kéri a gray frame-et is (az OF miatt)
-        # A Kalman tracker szimplán figyelmen kívül hagyja
+        # IMPORTANT: update now also requires the gray frame (because of OF)
+        # Kalman tracker simply ignores it
         final_pos = tracker.update(measured_coords, frame_gray=gray)
 
         final_cx, final_cy = None, None
@@ -491,43 +563,43 @@ def process_video(video_path, method='kf', show_traj=False, debug=False, skip_se
             final_cx, final_cy = int(final_pos[0]), int(final_pos[1])
             is_predicted = (measured_coords is None)
             
-            # Mentés
+            # Save
             if cv2.pointPolygonTest(inner_pts_array, (final_cx, final_cy), False) < 0:
                 trajectory_data.append((round(timestamp_sec, 3), final_cx, final_cy, is_predicted))
             else:
                 final_cx, final_cy = None, None
 
-        # --- MEGJELENÍTÉS ---
+        # --- VISUALIZATION ---
         if visualization_active:
-            # 1. Nyers detektálás doboza (Zöld) - Csak ha van kontúr
+            # 1. Raw detection box (Green) - Only if contour exists
             if best_contour is not None:
                 x, y, w, h = cv2.boundingRect(best_contour)
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-            # 2. Tracker pozíciója (Kereszt)
+            # 2. Tracker position (Crosshair)
             if final_cx is not None:
-                # SZÍNEZÉS: Ha measured_coords None, akkor ez PREDIKCIÓ -> SÁRGA
-                # Ha van measured_coords, akkor MÉRÉS -> PIROS
+                # COLORING: If measured_coords is None, this is PREDICTION -> YELLOW
+                # If measured_coords exists, this is MEASUREMENT -> RED
                 is_prediction = (measured_coords is None)
-                color = (0, 255, 255) if is_prediction else (0, 0, 255) # Sárga vs Piros
+                color = (0, 255, 255) if is_prediction else (0, 0, 255) # Yellow vs Red
                 
                 cv2.drawMarker(frame, (final_cx, final_cy), color, cv2.MARKER_CROSS, 20, 2)
                 
-                # Opcionális: kiírhatjuk mellé, hogy "Pred"
+                # Optional: print "Pred" next to it
                 if is_prediction and debug:
                     cv2.putText(frame, "Pred", (final_cx+10, final_cy-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-            # 3. Trajektória "csík" (Múltbeli pontok)
-            # Csak az utolsó 100 pontot rajzoljuk ki a gyorsaság miatt
+            # 3. Trajectory "trail" (Past points)
+            # Only draw last 100 points for speed
             for point in trajectory_data[-100:]:
-                # point struktúra: (time, x, y, is_predicted)
+                # point structure: (time, x, y, is_predicted)
                 p_x, p_y = point[1], point[2]
                 p_is_pred = point[3]
                 
                 pt_color = (0, 255, 255) if p_is_pred else (0, 0, 255)
                 cv2.circle(frame, (p_x, p_y), 2, pt_color, -1)
 
-            # Poligonok rajzolása (Kékessárga)
+            # Draw polygons (Yellow-blue)
             pts_out = outer_pts_array.reshape((-1, 1, 2))
             pts_in = inner_pts_array.reshape((-1, 1, 2))
             cv2.polylines(frame, [pts_out], True, (255, 255, 0), 1)
@@ -540,7 +612,7 @@ def process_video(video_path, method='kf', show_traj=False, debug=False, skip_se
 
             cv2.imshow("Tracking", display_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                print("\nMegszakítva.")
+                print("\nInterrupted.")
                 break
 
     cap.release()
@@ -551,34 +623,34 @@ def process_video(video_path, method='kf', show_traj=False, debug=False, skip_se
         final_csv_data = [(t, x, y) for (t, x, y, is_pred) in trajectory_data]
 
         video_filename = os.path.splitext(os.path.basename(video_path))[0]
-        # Filenévbe tesszük a módszert (kf vagy of)
+        # Add method to filename (kf or of)
         csv_output_file = f"{video_filename}_{method}_trajectory.csv"
         output_path = os.path.join("results", csv_output_file)
         
         save_to_csv(final_csv_data, output_path)
 
-        # Térkép rajzolás...
-        print("Végső trajektória kirajzolása...")
+        # Draw map...
+        print("Drawing final trajectory...")
         pts_out = outer_pts_array.reshape((-1, 1, 2))
         pts_in = inner_pts_array.reshape((-1, 1, 2))
         cv2.polylines(final_background_image, [pts_out], True, (255, 0, 0), 2)
         cv2.polylines(final_background_image, [pts_in], True, (255, 0, 0), 2)
 
-        # SZÍNEZETT PONTOK RAJZOLÁSA A TÉRKÉPRE
-        for point in trajectory_data: # Itt a tisztított adatokat vagy a nyerset használod, attól függően hol tart a kód
+        # DRAW COLORED POINTS ON MAP
+        for point in trajectory_data: # Here use either cleaned data or raw, depending on code state
             p_x, p_y = point[1], point[2]
             
-            # Ellenőrizzük, hogy van-e 4. elem (is_predicted)
+            # Check if 4th element exists (is_predicted)
             if len(point) > 3:
                 p_is_pred = point[3]
-                color = (0, 255, 255) if p_is_pred else (0, 0, 255) # Sárga vs Piros
+                color = (0, 255, 255) if p_is_pred else (0, 0, 255) # Yellow vs Red
             else:
-                color = (0, 0, 255) # Ha nincs infó, legyen piros
+                color = (0, 0, 255) # If no info, use red
                 
             cv2.circle(final_background_image, (p_x, p_y), 2, color, -1)
 
         output_image = os.path.join("results", f"{video_filename}_{method}_trajectory_map.jpg")
         cv2.imwrite(output_image, final_background_image)
-        print(f"Kész. ({method})")
+        print(f"Done. ({method})")
     else:
-        print("Nem lett rögzítve adat.")
+        print("No data recorded.")
