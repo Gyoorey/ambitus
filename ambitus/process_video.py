@@ -235,6 +235,153 @@ class OpticalFlowRatTracker:
         # OF does not store velocity directly, but we can return 0 or dummy data
         return 0.0, 0.0, 0.0
 
+class PureSparseOFTracker:
+    def __init__(self, inner_poly, outer_poly):
+        self.name = "Pure Sparse OF"
+        self.missed_frames = 0
+        self.collision_detected = False
+        self.is_initialized = False
+        self.last_valid_pos = None 
+        
+        self.inner_poly = inner_poly
+        self.outer_poly = outer_poly
+        
+        self.prev_gray = None
+        self.p0 = None # Tracked points
+        
+        # Lucas-Kanade parameters
+        self.lk_params = dict(winSize=(15, 15), maxLevel=2,
+                              criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+        
+        # Feature search (only during initialization)
+        self.feature_params = dict(maxCorners=50, qualityLevel=0.1, minDistance=5, blockSize=5)
+
+    def check_geometric_constraints(self, x, y):
+        if cv2.pointPolygonTest(self.inner_poly, (float(x), float(y)), False) >= 0: return False 
+        if cv2.pointPolygonTest(self.outer_poly, (float(x), float(y)), False) < 0: return False 
+        return True
+
+    def update(self, measured_coords, frame_gray):
+        """
+        measured_coords: Position detected by MOG2.
+        LOGIC:
+        - If we have enough trackable points (self.p0), we ignore measured_coords and only use OF.
+        - If we have no points (lost them), we reinitialize based on measured_coords.
+        """
+        self.collision_detected = False
+        
+        # 1. Do we have enough trackable points from the previous frame?
+        if self.is_initialized and self.p0 is not None and len(self.p0) > 5:
+            # OPTICAL FLOW TRACKING
+            p1, st, err = cv2.calcOpticalFlowPyrLK(self.prev_gray, frame_gray, self.p0, None, **self.lk_params)
+            
+            # Select good points
+            if p1 is not None:
+                good_new = p1[st == 1]
+                
+                if len(good_new) > 5:
+                    # Rat's new position is the centroid of the points (average)
+                    cx = int(np.mean(good_new[:, 0]))
+                    cy = int(np.mean(good_new[:, 1]))
+                    
+                    # Geometric constraint check
+                    if self.check_geometric_constraints(cx, cy):
+                        self.last_valid_pos = (cx, cy)
+                        self.missed_frames = 0
+                        
+                        # Update points
+                        self.p0 = good_new.reshape(-1, 1, 2)
+                        self.prev_gray = frame_gray.copy()
+                        return (cx, cy)
+                    else:
+                        # Hit wall with the points -> Reset
+                        self.collision_detected = True
+                        # Let the branch below (re-init) run next time, for now return the old position
+                        self.p0 = None # Forced reset
+                        return self.last_valid_pos
+            
+            # If we reach here, we lost the points
+            self.p0 = None 
+
+        # 2. INITIALIZATION / RESCUE
+        # Only process MOG2 if OF failed
+        if measured_coords is not None:
+            self.missed_frames = 0
+            self.is_initialized = True
+            self.last_valid_pos = measured_coords
+            
+            # Search for new points on the rat (around MOG2 position)
+            mask_roi = np.zeros_like(frame_gray)
+            cx, cy = measured_coords
+            cv2.circle(mask_roi, (cx, cy), 25, 255, -1) # Slightly larger radius for search
+            
+            self.p0 = cv2.goodFeaturesToTrack(frame_gray, mask=mask_roi, **self.feature_params)
+            self.prev_gray = frame_gray.copy()
+            
+            return measured_coords
+
+        # 3. Complete darkness (neither OF nor MOG2)
+        self.missed_frames += 1
+        return None
+
+    def get_state_debug(self):
+        # Optional: Could return the number of tracked points instead of speed
+        num_points = len(self.p0) if self.p0 is not None else 0
+        return float(num_points), 0.0, 0.0 # Return point count instead of speed
+
+class FusionRatTracker:
+    def __init__(self, inner_poly, outer_poly):
+        self.name = "MOG2 + DOF Fusion"
+        self.missed_frames = 0
+        self.collision_detected = False
+        
+        self.is_initialized = False
+        self.last_valid_pos = None 
+        
+        self.inner_poly = inner_poly
+        self.outer_poly = outer_poly
+
+    def update(self, measured_coords, frame_gray=None):
+        if measured_coords is not None:
+            self.missed_frames = 0
+            self.is_initialized = True
+            self.last_valid_pos = measured_coords
+            return measured_coords
+        else:
+            self.missed_frames += 1
+            return None
+
+    def get_state_debug(self):
+        return 0.0, 0.0, 0.0
+    
+
+class MotionHistoryTracker:
+    def __init__(self, inner_poly, outer_poly):
+        self.name = "Motion History (MHI)"
+        self.missed_frames = 0
+        self.collision_detected = False
+        self.is_initialized = False
+        self.last_valid_pos = None 
+        self.inner_poly = inner_poly
+        self.outer_poly = outer_poly
+        
+        self.mhi = None
+        self.prev_gray = None
+        self.timestamp = 0
+        self.duration = None # Duration for MHI in seconds
+
+    def update(self, measured_coords, frame_gray=None):
+        if measured_coords is not None:
+            self.missed_frames = 0
+            self.is_initialized = True
+            self.last_valid_pos = measured_coords
+            return measured_coords
+        else:
+            self.missed_frames += 1
+            return None
+
+    def get_state_debug(self):
+        return 0.0, 0.0, 0.0
 
 def load_config(config_file):
     if not os.path.exists(config_file):
@@ -367,7 +514,7 @@ def clean_trajectory(data, max_drift_dist=50):
     return cleaned_data
 
 # --- DEBUG VIEW BUILDER ---
-def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
+def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos, extra_debug_mask=None):
     """
     Assembles the combined image:
     [ Original Video ] [ Mask ]
@@ -375,20 +522,32 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
     """
     h, w = frame.shape[:2]
     panel_width = 400 
-    
-    mask_bgr = cv2.cvtColor(fgmask, cv2.COLOR_GRAY2BGR)
     target_h = int(h / 2)
-    mask_resized = cv2.resize(mask_bgr, (panel_width, target_h))
-    cv2.rectangle(mask_resized, (0,0), (panel_width-1, target_h-1), (100,100,100), 2)
     
-    # DYNAMIC CAPTION
-    # If tracker name is Dense OF, then different caption
-    mask_label = "Flow Magnitude (Thresh)" if tracker.name == "Dense Optical Flow" else "MOG2 Mask"
-    cv2.putText(mask_resized, mask_label, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+    if tracker.name == "MOG2 + DOF Fusion" and extra_debug_mask is not None:
+        # FUSION VIEW: Colored composite
+        # fgmask = MOG2 (should be Green)
+        # extra_debug_mask = DOF (should be Red)
+        
+        composite = np.zeros((h, w, 3), dtype=np.uint8)
+        composite[:, :, 1] = fgmask           # Green channel (MOG2)
+        composite[:, :, 2] = extra_debug_mask # Red channel (DOF)
+        
+        # Resize for the panel
+        mask_resized = cv2.resize(composite, (panel_width, target_h))
+        label = "Fusion: Green=MOG2, Red=DOF"
+    else:
+        # Traditional view (Grayscale)
+        mask_bgr = cv2.cvtColor(fgmask, cv2.COLOR_GRAY2BGR)
+        mask_resized = cv2.resize(mask_bgr, (panel_width, target_h))
+        label = tracker.name
+    
+    cv2.rectangle(mask_resized, (0,0), (panel_width-1, target_h-1), (100,100,100), 2)    
+    cv2.putText(mask_resized, label, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
 
     info_panel = np.zeros((h - target_h, panel_width, 3), dtype=np.uint8)
     
-    speed, vx, vy = tracker.get_state_debug()
+    val1, val2, val3 = tracker.get_state_debug()
     missed = tracker.missed_frames
     
     line_h = 30
@@ -404,7 +563,7 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
         status_color = (0, 0, 255)
         status_text = "LOST"
 
-# For Simple and Dense trackers there is no prediction, so missed > 0 means NO DETECTION
+    # For Simple and Dense trackers there is no prediction, so missed > 0 means NO DETECTION
     if (tracker.name.startswith("Simple") or tracker.name.startswith("Dense")) and missed > 0:
         status_text = "NO DETECTION"
         status_color = (0, 0, 255)
@@ -426,11 +585,15 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
     cv2.putText(info_panel, track_str, (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 255), 1)
     y_off += line_h * 2
     
-    cv2.putText(info_panel, f"Speed: {speed:.2f} px/fr", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 255, 200), 1)
+    if tracker.name == "Pure Sparse OF":
+        cv2.putText(info_panel, f"Tracked Pts: {int(val1)}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 255, 200), 1)
+    else:
+        cv2.putText(info_panel, f"Speed: {val1:.2f} px/fr", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 255, 200), 1)
+
     y_off += line_h
-    cv2.putText(info_panel, f"Vel X: {vx:.2f}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
+    cv2.putText(info_panel, f"Vel X: {val2:.2f}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
     y_off += line_h
-    cv2.putText(info_panel, f"Vel Y: {vy:.2f}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
+    cv2.putText(info_panel, f"Vel Y: {val3:.2f}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
     y_off += line_h * 2
     
     cv2.putText(info_panel, f"Missed Frames: {missed}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 100, 255), 1)
@@ -444,7 +607,36 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
 
 def process_video(video_path, config_file="arena_config_poly.json", method='simple', show_traj=False, debug=False, skip_seconds=0.0, min_area=200):
     """
-    method: 'kf' (Kalman Filter) or 'of' (Optical Flow)
+    Process a video file to track rat movement within defined polygonal regions.
+    This function applies various tracking methods to detect and follow a rat's trajectory
+    throughout a video. It supports multiple detection and tracking algorithms, including
+    background subtraction (MOG2), optical flow, Kalman filtering, and dense optical flow.
+    The function can process videos with configurable parameters for detection sensitivity,
+    region of interest, and visualization options.
+    Args:
+        video_path (str): Path to the input video file to process.
+        config_file (str, optional): Path to the JSON configuration file containing polygon
+            coordinates for inner and outer regions. Defaults to "arena_config_poly.json".
+        method (str, optional): Tracking algorithm to use. Options are:
+            - 'simple': MOG2 background subtraction only
+            - 'of': Optical flow-based tracking
+            - 'kf': Kalman filter tracking
+            - 'dof': Dense optical flow tracking
+            - 'sub_dof_fusion': Fusion of MOG2 and Dense Optical Flow (advanced)
+            - 'mhi': Motion History Image-based tracking (experimental)
+            Defaults to 'simple'.
+        show_traj (bool, optional): If True, display the video with trajectory visualization
+            in real-time. Defaults to False.
+        debug (bool, optional): If True, enable debug visualizations and messages during processing.
+            Defaults to False.
+        skip_seconds (float, optional): Number of seconds to skip from the start of the video
+            before beginning processing. Defaults to 0.0.
+        min_area (int, optional): Minimum contour area (in pixels) to consider as a valid detection.
+            Smaller detections are ignored. Defaults to 200.
+    Returns:
+        None. Outputs are saved to files:
+            - CSV file: "{video_filename}_{method}_trajectory.csv" containing (timestamp, x, y)
+            - Image file: "{video_filename}_{method}_trajectory_map.jpg" showing the trajectory map
     """
     config = load_config(config_file)
     if config is None: return
@@ -473,7 +665,17 @@ def process_video(video_path, config_file="arena_config_poly.json", method='simp
         fgbg = cv2.createBackgroundSubtractorMOG2(history=5000, varThreshold=30, detectShadows=False)
     
     # --- TRACKER SELECTION ---
-    if method == 'of':
+    if method == 'mhi':
+        print("Using Motion History Image Tracker")
+        tracker = MotionHistoryTracker(inner_poly=inner_pts_array, outer_poly=outer_pts_array)
+        tracker.duration = 20.0 # Duration for MHI
+    elif method == 'sub_dof_fusion':
+        print("Using Fusion Tracker (MOG2 + DOF)")
+        tracker = FusionRatTracker(inner_poly=inner_pts_array, outer_poly=outer_pts_array)
+    elif method == 'pure_of':
+        print("Using PURE Sparse Optical Flow Tracker")
+        tracker = PureSparseOFTracker(inner_poly=inner_pts_array, outer_poly=outer_pts_array)
+    elif method == 'of':
         print("Using Optical Flow Tracker")
         tracker = OpticalFlowRatTracker(inner_poly=inner_pts_array, outer_poly=outer_pts_array)
     elif method == 'simple':
@@ -517,8 +719,60 @@ def process_video(video_path, config_file="arena_config_poly.json", method='simp
 
         # --- DETECTION LOGIC SELECTION ---
         fgmask = None
-
-        if method == 'dof':
+        extra_mask_for_debug = None
+        if method == 'mhi':
+            if 'mhi' not in locals():
+                mhi = np.zeros_like(gray, dtype=np.float32)
+                prev_gray_mhi = gray.copy()
+            
+            # 2. Frame Difference Calculation
+            diff = cv2.absdiff(gray, prev_gray_mhi)
+            
+            # 3. Binary mask (Threshold) - Where there is movement, it is 1
+            _, motion_mask = cv2.threshold(diff, 25, 1, cv2.THRESH_BINARY)
+            
+            # 4. MHI Update (Manual)
+            # - We decrease the value everywhere a little (Fade out / Decay)
+            #   E.g. -1 every frame (if we are on a 0-255 scale)
+            #   Here we use float32 for the timestamp
+            
+            timestamp = float(frame_counter)
+            duration = tracker.duration
+            
+            # Where there is movement (motion_mask == 1), we write the current timestamp
+            mhi[motion_mask > 0] = timestamp
+            
+            # Where the movement is too old (< timestamp - duration), we reset to zero
+            # (This step is optional if only visualization is needed, but helps in contour detection)
+            mhi[mhi < (timestamp - duration)] = 0
+            
+            # 5. Conversion to 0-255 uint8 mask for contour detection
+            # Normalize: (val - (now - duration)) / duration -> 0..1 -> 0..255
+            # Where the movement is fresh, it is bright (255). Where it is old, it darkens.
+            
+            vis_mhi = (mhi - (timestamp - duration)) / duration
+            vis_mhi = np.clip(vis_mhi, 0, 1) # Just to be safe
+            fgmask = np.uint8(vis_mhi * 255)
+            # Update
+            prev_gray_mhi = gray.copy()
+        elif method == 'sub_dof_fusion':
+            # 1. MOG2
+            mask_mog2 = fgbg.apply(gray_blurred, learningRate=0.0005)
+            
+            # 2. DOF
+            flow = cv2.calcOpticalFlowFarneback(prev_gray_dof, gray_blurred, None, 
+                                                0.5, 3, 15, 3, 5, 1.2, 0)
+            mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+            _, mask_dof = cv2.threshold(mag, 2.0, 255, cv2.THRESH_BINARY)
+            mask_dof = mask_dof.astype(np.uint8)
+            
+            # 3. FÚZIÓ (VAGY kapcsolat)
+            fgmask = cv2.bitwise_or(mask_mog2, mask_dof)
+            
+            # Frissítjük a köv. körhöz
+            prev_gray_dof = gray_blurred.copy()
+            extra_mask_for_debug = mask_dof
+        elif method == 'dof':
             # DENSE OPTICAL FLOW DETECTOR
             # 1. Flow calculation (Farneback)
             # cv2.calcOpticalFlowFarneback(prev, next, flow, pyr_scale, levels, winsize, iterations, poly_n, poly_sigma, flags)
@@ -607,7 +861,19 @@ def process_video(video_path, config_file="arena_config_poly.json", method='simp
             cv2.polylines(frame, [pts_in], True, (255, 255, 0), 1)
 
             if debug:
-                display_frame = create_debug_view(frame, fgmask, tracker, measured_coords, (final_cx, final_cy))
+                if method == 'sub_dof_fusion':
+                    debug_mog2 = cv2.bitwise_and(mask_mog2, mask_mog2, mask=roi_mask)
+                    debug_dof = cv2.bitwise_and(extra_mask_for_debug, extra_mask_for_debug, mask=roi_mask)
+                    display_frame = create_debug_view(
+                        frame, 
+                        debug_mog2,
+                        tracker, 
+                        measured_coords, 
+                        (final_cx, final_cy), 
+                        extra_debug_mask=debug_dof
+                    )
+                else:
+                    display_frame = create_debug_view(frame, fgmask, tracker, measured_coords, (final_cx, final_cy))
             else:
                 display_frame = frame
 
