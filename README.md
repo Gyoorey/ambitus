@@ -35,3 +35,6 @@ ambitus load-video ambitus/data/45.mp4 --show
 
 Process video and plot and save trajectory. Available methods: background subtraction (simple), dense optical flow with Farneback (dof), Kalman-Filter (kf), Optical-flow (of)  
 ambitus analyze data/45.mp4 --show --skip-seconds 0.0 --debug --method simple
+
+Select arena poly config file:
+ambitus analyze data/45.mp4 --show --skip-seconds 0.0 --debug --method simple --config arena_config_poly.json
