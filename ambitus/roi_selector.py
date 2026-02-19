@@ -3,109 +3,144 @@ import json
 import numpy as np
 import os
 
-# --- KONFIGURÁCIÓ ---
-VIDEO_PATH = "data/45.mp4"
-CONFIG_FILE = "arena_config_poly.json"
-
-# Globális változók
-selected_points = []  # Ebben tároljuk a (x, y) koordinátákat
-
+# Globális változók (modul szinten, mert a callback csak így éri el)
+points_current = []
+points_outer = []
+points_inner = []
+current_mode = "OUTER" # OUTER -> INNER -> DONE
 
 def mouse_callback(event, x, y, flags, param):
-    global selected_points
+    global points_current
+    
+    if current_mode == "DONE": return
 
     if event == cv2.EVENT_LBUTTONDOWN:
-        # Maximum 8 pontot engedünk (4 külső + 4 belső)
-        if len(selected_points) < 8:
-            selected_points.append((x, y))
-            print(f"Pont rögzítve: {x}, {y}")
+        points_current.append((x, y))
+        print(f"Pont: {x}, {y}")
 
+def select_roi(video_path, config_file="arena_config_poly.json"):
+    global current_mode, points_outer, points_inner, points_current
+    
+    # Reset
+    points_current = []
+    points_outer = []
+    points_inner = []
+    current_mode = "OUTER"
 
-def main():
-    global selected_points
-
-    if not os.path.exists(VIDEO_PATH):
-        print(f"HIBA: A '{VIDEO_PATH}' fájl nem található!")
+    if not os.path.exists(video_path):
+        print(f"HIBA: A '{video_path}' fájl nem található!")
         return
 
-    cap = cv2.VideoCapture(VIDEO_PATH)
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print("HIBA: Nem sikerült megnyitni a videót.")
+        return
+
     ret, frame = cap.read()
     cap.release()
 
     if not ret:
-        print("HIBA: Nem sikerült beolvasni a videó első képkockáját.")
+        print("HIBA: Nem sikerült beolvasni az első képkockát.")
         return
 
-    cv2.namedWindow("Polygon Selector")
-    cv2.setMouseCallback("Polygon Selector", mouse_callback)
+    window_name = f"ROI Selector - {os.path.basename(video_path)}"
+    cv2.namedWindow(window_name)
+    cv2.setMouseCallback(window_name, mouse_callback)
 
-    print("--- HASZNÁLATI UTASÍTÁS ---")
-    print("1. Kattints a KÜLSŐ határ 4 sarkára (körbejárva!).")
-    print("2. Kattints a BELSŐ határ 4 sarkára (körbejárva!).")
-    print("'r': Újrakezdés (Reset)")
-    print("'q' vagy 'Enter': Mentés és kilépés")
+    print(f"--- ROI KIVÁLASZTÁS: {video_path} ---")
+    print("1. KÜLSŐ határ (Tetszőleges számú pont). ENTER a befejezéshez.")
+    print("2. BELSŐ határ (Tetszőleges számú pont). ENTER a mentéshez.")
+    print("'r': Reset (Újrakezdés)")
+    print("'q': Kilépés mentés nélkül")
 
     while True:
         img_copy = frame.copy()
 
-        # Pontok kirajzolása
-        for pt in selected_points:
-            cv2.circle(img_copy, pt, 5, (0, 0, 255), -1)
-
-        # 1. KÜLSŐ Poligon kirajzolása (első 4 pont)
-        if len(selected_points) > 0:
-            # Vonalak húzása a pontok között, amíg nincs meg a 4.
-            limit_outer = min(len(selected_points), 4)
-            for i in range(limit_outer - 1):
-                cv2.line(img_copy, selected_points[i], selected_points[i + 1], (0, 255, 0), 2)
-
-            # Ha megvan a 4. pont, kössük össze az utolsót az elsővel (zárjuk be)
-            if len(selected_points) >= 4:
-                cv2.line(img_copy, selected_points[3], selected_points[0], (0, 255, 0), 2)
-
-        # 2. BELSŐ Poligon kirajzolása (második 4 pont)
-        if len(selected_points) > 4:
-            limit_inner = len(selected_points)
-            for i in range(4, limit_inner - 1):
-                cv2.line(img_copy, selected_points[i], selected_points[i + 1], (0, 0, 255), 2)
-
-            # Ha megvan a 8. pont, zárjuk be a belső kört is
-            if len(selected_points) == 8:
-                cv2.line(img_copy, selected_points[7], selected_points[4], (0, 0, 255), 2)
-
-        # Instrukciók
-        if len(selected_points) < 4:
-            msg = f"KULSO HATAR: {len(selected_points)}/4 pont"
-        elif len(selected_points) < 8:
-            msg = f"BELSO HATAR: {len(selected_points) - 4}/4 pont"
+        # Rajzolás
+        poly_list = []
+        if current_mode == "OUTER":
+            poly_list = [points_outer, points_current] # Már kész (üres) + Épp rajzolt
+        elif current_mode == "INNER":
+            poly_list = [points_outer, points_current] # Már kész (külső) + Épp rajzolt (belső)
         else:
-            msg = "KESZ! Nyomj 'q'-t a menteshez."
+            poly_list = [points_outer, points_inner]
 
-        cv2.putText(img_copy, msg, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        cv2.imshow("Polygon Selector", img_copy)
+        # Kirajzoljuk a kész poligonokat és az épp rajzoltat is
+        if len(points_outer) > 0:
+            pts = np.array(points_outer, np.int32).reshape((-1, 1, 2))
+            cv2.polylines(img_copy, [pts], True, (0, 255, 0), 2)
+            
+        if len(points_inner) > 0:
+            pts = np.array(points_inner, np.int32).reshape((-1, 1, 2))
+            cv2.polylines(img_copy, [pts], True, (0, 0, 255), 2)
+            
+        # Az aktuális (még nyitott) poligon rajzolása
+        if len(points_current) > 0:
+            for pt in points_current:
+                cv2.circle(img_copy, pt, 4, (255, 255, 0), -1)
+            if len(points_current) > 1:
+                pts = np.array(points_current, np.int32).reshape((-1, 1, 2))
+                cv2.polylines(img_copy, [pts], False, (255, 255, 0), 1)
+
+        # Üzenetek
+        if current_mode == "OUTER":
+            msg = f"1. KULSO HATAR ({len(points_current)} pont). ENTER->Next"
+            color = (0, 255, 0)
+        elif current_mode == "INNER":
+            msg = f"2. BELSO HATAR ({len(points_current)} pont). ENTER->Save"
+            color = (0, 0, 255)
+        else:
+            msg = "KESZ! Mentes..."
+            color = (0, 255, 255)
+
+        cv2.putText(img_copy, msg, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        cv2.imshow(window_name, img_copy)
 
         key = cv2.waitKey(20) & 0xFF
 
+        # Reset ('r')
         if key == ord('r'):
-            selected_points = []
+            points_current = []
+            points_outer = []
+            points_inner = []
+            current_mode = "OUTER"
             print("Resetelve.")
 
-        if key == ord('q') or key == 13:
-            if len(selected_points) == 8:
-                data = {
-                    "outer_poly": selected_points[:4],
-                    "inner_poly": selected_points[4:]
-                }
-                with open(CONFIG_FILE, 'w') as f:
-                    json.dump(data, f)
-                print(f"Koordináták elmentve: {CONFIG_FILE}")
-                break
-            elif key == ord('q'):
-                print("Kilépés mentés nélkül.")
-                break
+        # Next / Save (ENTER)
+        if key == 13: 
+            if current_mode == "OUTER":
+                if len(points_current) < 3:
+                    print("Hiba: Legalább 3 pont kell!")
+                else:
+                    points_outer = list(points_current) # Mentés
+                    points_current = [] # Törlés a következőhöz
+                    current_mode = "INNER"
+                    print("--> Külső kész. Jöhet a BELSŐ.")
+            
+            elif current_mode == "INNER":
+                if len(points_current) < 3:
+                    print("Hiba: Legalább 3 pont kell!")
+                else:
+                    points_inner = list(points_current)
+                    current_mode = "DONE"
+                    
+                    # JSON Mentés
+                    data = {
+                        "outer_poly": points_outer,
+                        "inner_poly": points_inner
+                    }
+                    with open(config_file, 'w') as f:
+                        json.dump(data, f)
+                    print(f"Konfiguráció elmentve: {config_file}")
+                    break
+
+        # Quit ('q')
+        if key == ord('q'):
+            print("Kilépés mentés nélkül.")
+            break
 
     cv2.destroyAllWindows()
 
-
 if __name__ == "__main__":
-    main()
+    # Teszteléshez (ha közvetlenül hívod)
+    select_roi("data/45.mp4")

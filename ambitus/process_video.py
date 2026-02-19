@@ -236,8 +236,9 @@ class OpticalFlowRatTracker:
         return 0.0, 0.0, 0.0
 
 
-def load_config(config_file="arena_config_poly.json"):
+def load_config(config_file):
     if not os.path.exists(config_file):
+        print(f"HIBA: Nem található a konfigurációs fájl: {config_file}")
         return None
     with open(config_file, 'r') as f:
         return json.load(f)
@@ -441,11 +442,11 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
     combined = np.hstack([frame, right_sidebar])
     return combined
 
-def process_video(video_path, method='kf', show_traj=False, debug=False, skip_seconds=0.0, min_area=200):
+def process_video(video_path, config_file="arena_config_poly.json", method='simple', show_traj=False, debug=False, skip_seconds=0.0, min_area=200):
     """
     method: 'kf' (Kalman Filter) or 'of' (Optical Flow)
     """
-    config = load_config()
+    config = load_config(config_file)
     if config is None: return
 
     inner_pts_array = np.array(config["inner_poly"], dtype=np.int32)

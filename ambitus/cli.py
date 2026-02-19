@@ -2,6 +2,7 @@ import click
 import cv2
 from process_video import process_video
 from matplotlib import pyplot as plt
+from roi_selector import select_roi
 
 
 @click.group()
@@ -44,18 +45,29 @@ def load_video(video_path, show):
 
 @cli.command()
 @click.argument("path", type=click.Path(exists=True))
+@click.option("--config", default="arena_config_poly.json", help="Path to ROI config JSON file")
 @click.option("--show", is_flag=True, help="Detect the rat and show trajectory on the loaded video")
 @click.option("--debug", is_flag=True, help="Show debug view")
 @click.option("--skip-seconds", default=0.0, help="Seconds to skip at the start")
 @click.option("--min-area", default=200, help="Minimum area")
 @click.option("--method", type=click.Choice(['simple', 'dof', 'kf', 'of'], case_sensitive=False), default='simple', help="Tracking method: Kalman Filter (kf) or Optical Flow (of)")
-def analyze(path, show, debug, skip_seconds, min_area, method):
+def analyze(path, config, show, debug, skip_seconds, min_area, method):
     """ Process the video to detect and track rat trajectories."""
     process_video(
         video_path=path,
+        config_file=config,
         method=method,
         show_traj=show,
         debug=debug,
         skip_seconds=skip_seconds,
         min_area=min_area,
     )
+
+@cli.command()
+@click.argument("video_path", type=click.Path(exists=True))
+@click.option("--output", default="arena_config_poly.json", help="Output config file path")
+def roi(video_path, output):
+    """
+    Open GUI to define the Region of Interest (ROI) polygons.
+    """
+    select_roi(video_path, config_file=output)
