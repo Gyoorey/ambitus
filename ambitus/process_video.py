@@ -114,9 +114,8 @@ class KalmanRatTracker:
                     self.kalman.statePost[3, 0] = 0.0 
                     return self.last_valid_pos
             
-            decay_factor = 0.9 
-            self.kalman.statePost[2, 0] *= decay_factor
-            self.kalman.statePost[3, 0] *= decay_factor
+            self.kalman.statePost[2, 0] *= 0.0
+            self.kalman.statePost[3, 0] *= 0.0
 
             if self.missed_frames > 50: return None
             return (pred_x, pred_y)
@@ -661,11 +660,23 @@ def process_video(video_path, config_file="arena_config_poly.json", method='simp
     clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
     # Background subtractor (only needed if NOT in 'dof' mode)
     fgbg = None
+    running_avg_bg = None
+    rat_mask_for_bg_update = None # only for static method
     if method != 'dof':
         fgbg = cv2.createBackgroundSubtractorMOG2(history=5000, varThreshold=30, detectShadows=False)
     
     # --- TRACKER SELECTION ---
-    if method == 'mhi':
+    if method == 'static':
+        gray_first = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
+        gray_first = clahe.apply(gray_first)
+        gray_first = cv2.GaussianBlur(gray_first, (7, 7), 0)     
+        running_avg_bg = np.float32(gray_first)
+        rat_mask_for_bg_update = np.zeros_like(gray_first, dtype=np.uint8)
+        
+        print("Using Static Background Tracker")
+        tracker = SimpleRatTracker(inner_poly=inner_pts_array, outer_poly=outer_pts_array)
+        tracker.name = "Static Diff"
+    elif method == 'mhi':
         print("Using Motion History Image Tracker")
         tracker = MotionHistoryTracker(inner_poly=inner_pts_array, outer_poly=outer_pts_array)
         tracker.duration = 20.0 # Duration for MHI
@@ -720,7 +731,27 @@ def process_video(video_path, config_file="arena_config_poly.json", method='simp
         # --- DETECTION LOGIC SELECTION ---
         fgmask = None
         extra_mask_for_debug = None
-        if method == 'mhi':
+        if method == 'static':
+            # 1. Create a "Protective Mask" around the rat
+            # Dilate the previous mask a bit to prevent the edges of the rat from burning
+            kernel_protect = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
+            dilated_rat = cv2.dilate(rat_mask_for_bg_update, kernel_protect, iterations=1)
+            
+            # Invert: Where there is NO rat (255), we update. Where there is (0), we freeze.
+            bg_update_mask = cv2.bitwise_not(dilated_rat)
+            
+            # 2. Selective background update (only on pixels allowed by the mask)
+            # A slightly bolder alpha (0.005) can be used because the rat cannot burn in anymore!
+            cv2.accumulateWeighted(gray_blurred, running_avg_bg, 0.005, mask=bg_update_mask)
+            
+            # 3. Convert back to 8-bit image for subtraction
+            bg_uint8 = cv2.convertScaleAbs(running_avg_bg)
+            
+            # 4. Subtraction and thresholding
+            diff = cv2.absdiff(gray_blurred, bg_uint8)
+            _, fgmask = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+            
+        elif method == 'mhi':
             if 'mhi' not in locals():
                 mhi = np.zeros_like(gray, dtype=np.float32)
                 prev_gray_mhi = gray.copy()
@@ -756,39 +787,48 @@ def process_video(video_path, config_file="arena_config_poly.json", method='simp
             # Update
             prev_gray_mhi = gray.copy()
         elif method == 'sub_dof_fusion':
+            scale = 0.5
+            small_prev = cv2.resize(prev_gray_dof, (0,0), fx=scale, fy=scale)
+            small_curr = cv2.resize(gray_blurred, (0,0), fx=scale, fy=scale)
             # 1. MOG2
             mask_mog2 = fgbg.apply(gray_blurred, learningRate=0.0005)
             
             # 2. DOF
-            flow = cv2.calcOpticalFlowFarneback(prev_gray_dof, gray_blurred, None, 
-                                                0.5, 3, 15, 3, 5, 1.2, 0)
+            flow = cv2.calcOpticalFlowFarneback(small_prev, small_curr, None, 
+                                                0.5, 3, 15, 1, 5, 1.2, 0)
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-            _, mask_dof = cv2.threshold(mag, 2.0, 255, cv2.THRESH_BINARY)
-            mask_dof = mask_dof.astype(np.uint8)
+            _, small_mask_dof  = cv2.threshold(mag, 1.0, 255, cv2.THRESH_BINARY)
+            small_mask_dof  = small_mask_dof.astype(np.uint8)
+
+            mask_dof = cv2.resize(small_mask_dof.astype(np.uint8), (gray_blurred.shape[1], gray_blurred.shape[0]), interpolation=cv2.INTER_NEAREST)
             
-            # 3. FÚZIÓ (VAGY kapcsolat)
+            # 3. FUSION (OR connection)
             fgmask = cv2.bitwise_or(mask_mog2, mask_dof)
             
-            # Frissítjük a köv. körhöz
+            # Update for the next round
             prev_gray_dof = gray_blurred.copy()
             extra_mask_for_debug = mask_dof
         elif method == 'dof':
+            scale = 0.5 # Felbontás negyedelése (szélesség fele, magasság fele)
+            small_prev = cv2.resize(prev_gray_dof, (0,0), fx=scale, fy=scale)
+            small_curr = cv2.resize(gray_blurred, (0,0), fx=scale, fy=scale)
             # DENSE OPTICAL FLOW DETECTOR
             # 1. Flow calculation (Farneback)
             # cv2.calcOpticalFlowFarneback(prev, next, flow, pyr_scale, levels, winsize, iterations, poly_n, poly_sigma, flags)
             # winsize=15 (averaging window, smaller = better detail, but more noise)
             # iterations=3 (more iterations = more accurate, slower)
             # poly_n=5, poly_sigma=1.1 (sharper edges, less blur)
-            flow = cv2.calcOpticalFlowFarneback(prev_gray_dof, gray_blurred, None, 
-                                                0.5, 3, 15, 3, 5, 1.2, 0)
+            flow = cv2.calcOpticalFlowFarneback(small_prev, small_curr, None, 
+                                                0.5, 3, 15, 1, 5, 1.2, 0)
             
             # 2. Magnitude calculation (Speed)
             mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
             
             # 3. Thresholding: Anything moving faster than 2 pixels/frame is the rat
             # This 2.0 can be tuned for sensitivity
-            _, fgmask = cv2.threshold(mag, 2.5, 255, cv2.THRESH_BINARY)
-            fgmask = fgmask.astype(np.uint8)
+            _, small_fgmask = cv2.threshold(mag, 1.2, 255, cv2.THRESH_BINARY)
+            small_fgmask = small_fgmask.astype(np.uint8)
+            fgmask = cv2.resize(small_fgmask.astype(np.uint8), (gray_blurred.shape[1], gray_blurred.shape[0]), interpolation=cv2.INTER_NEAREST)
             
             # Update previous frame for next iteration
             prev_gray_dof = gray_blurred.copy()
@@ -808,6 +848,12 @@ def process_video(video_path, config_file="arena_config_poly.json", method='simp
         contours, _ = cv2.findContours(fgmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         best_contour, measured_coords = get_best_contour(contours, tracker, inner_pts_array, min_area)
+
+        if method == 'static':
+            rat_mask_for_bg_update.fill(0) # Clear previous
+            if best_contour is not None:
+                # Only draw the rat filled in white
+                cv2.drawContours(rat_mask_for_bg_update, [best_contour], -1, 255, thickness=cv2.FILLED)
         
         # IMPORTANT: update now also requires the gray frame (because of OF)
         # Kalman tracker simply ignores it
