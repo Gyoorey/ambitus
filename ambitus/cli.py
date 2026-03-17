@@ -1,8 +1,9 @@
 import click
 import cv2
-from process_video import process_video
+from process_video import process_video as process_video_legacy
 from matplotlib import pyplot as plt
 from roi_selector import select_roi
+from tracker import track
 
 
 @click.group()
@@ -43,7 +44,27 @@ def load_video(video_path, show):
     click.echo("Video loaded successfully.")
 
 
-@cli.command()
+@cli.command(name="analyze")
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--config", default="arena_config_poly.json", help="Path to ROI config JSON file")
+@click.option("--show", is_flag=True, help="Detect the rat and show trajectory on the loaded video")
+@click.option("--debug", is_flag=True, help="Show debug view")
+@click.option("--skip-seconds", default=0.0, help="Seconds to skip at the start")
+@click.option("--min-area", default=200, help="Minimum area")
+@click.option("--method", type=click.Choice(['simple', 'static'], case_sensitive=False), default='simple', help="Tracking method: simple (MOG2) or static (Masked Running Average).")
+def analyze(path, config, show, debug, skip_seconds, min_area, method):
+    """ Process video using the optimized, clean tracking methods. """
+    track(
+        video_path=path,
+        config_file=config,
+        method=method,
+        show_traj=show,
+        debug=debug,
+        skip_seconds=skip_seconds,
+        min_area=min_area,
+    )
+
+@cli.command(name="analyze-exp")
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--config", default="arena_config_poly.json", help="Path to ROI config JSON file")
 @click.option("--show", is_flag=True, help="Detect the rat and show trajectory on the loaded video")
@@ -53,7 +74,7 @@ def load_video(video_path, show):
 @click.option("--method", type=click.Choice(['static','simple', 'dof', 'kf', 'of', 'sub_dof_fusion', 'pure_of', 'mhi'], case_sensitive=False), default='simple', help="Tracking method: static(Median Backround Sub), simple (MOG2 Background Subtractor), simple + Kalman Filter (kf), simple + Optical Flow (of), dense optical flow (dof), fusion of MOG2 and DOF (sub_dof_fusion), pure sparse optical flow (pure_of), or motion history image (mhi).")
 def analyze(path, config, show, debug, skip_seconds, min_area, method):
     """ Process the video to detect and track rat trajectories."""
-    process_video(
+    process_video_legacy(
         video_path=path,
         config_file=config,
         method=method,
