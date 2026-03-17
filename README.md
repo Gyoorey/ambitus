@@ -33,8 +33,11 @@ ffmpeg -i ambitus/data/LE_17_1_45.mpg -vf "yadif,scale=768:576,setsar=1" -pix_fm
 Run a basic test command to verify everything works:  
 ambitus load-video ambitus/data/45.mp4 --show
 
-Process video and plot and save trajectory. Available methods: background diff. with running avg. (static), background subtraction (simple), dense optical flow with Farneback (dof), simple+Kalman-Filter (kf), simple+Optical-flow (of), pure opcital flow  (pure_of), Motion History Image (mhi)
-ambitus analyze data/45.mp4 --show --skip-seconds 0.0 --debug --method simple
+Tracking with fast methods: static (diff) or simple (MOG2):
+ambitus analyze data/45.mp4 --show --skip-seconds 0.0 --debug --method static --config arena_config_poly.json
 
-Select arena poly config file:
-ambitus analyze data/45.mp4 --show --skip-seconds 0.0 --debug --method simple --config arena_config_poly.json
+ROI alignment based on reference square coords (on 45.mp4): --debug to see aligned ROI:
+python align_roi data/45.mp4 --base-video data/80.mp4 --debug
+
+Available legacy methods: dense optical flow with Farneback (dof), simple+Kalman-Filter (kf), simple+Optical-flow (of), pure opcital flow  (pure_of), Motion History Image (mhi)
+ambitus analyze-exp data/45.mp4 --show --skip-seconds 0.0 --debug --method dof
