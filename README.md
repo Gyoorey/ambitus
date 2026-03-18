@@ -42,6 +42,14 @@ ROI alignment based on reference square coords (base_reference.jpg): use --debug
 
 `ambitus align_roi data/45.mp4 --debug`
 
+Interpolate missing frames, remove tracking outliers, and apply a low-pass filter to the trajectory CSV:
+
+`ambitus filter results/45_static_trajectory.csv --plot`
+
+Generate a color heatmap from the trajectory CSV data and overlay it on the original video's first frame. The script automatically finds the corresponding video file:
+
+`ambitus heatmap results/45_static_trajectory_filtered.csv --show`
+
 Available legacy methods: dense optical flow with Farneback (dof), simple+Kalman-Filter (kf), simple+Optical-flow (of), pure opcital flow  (pure_of), Motion History Image (mhi)
 
 `ambitus analyze-exp data/45.mp4 --show --skip-seconds 0.0 --debug --method dof`
