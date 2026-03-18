@@ -4,6 +4,7 @@ from process_video import process_video as process_video_legacy
 from matplotlib import pyplot as plt
 from roi_selector import select_roi
 from tracker import track
+from align_roi import align_video_roi 
 
 
 @click.group()
@@ -92,3 +93,15 @@ def roi(video_path, output):
     Open GUI to define the Region of Interest (ROI) polygons.
     """
     select_roi(video_path, config_file=output)
+
+@cli.command(name="align_roi")
+@click.argument("new_video", type=click.Path(exists=True))
+@click.option("--base-image", default="base_reference.jpg", type=click.Path(exists=True), help="The original reference image (first frame of the base video)")
+@click.option("--base-config", default="arena_config_poly.json", help="The original ROI JSON file")
+@click.option("--debug", is_flag=True, help="Display the visual result")
+def align_roi_cmd(new_video, base_image, base_config, debug):
+    """
+    Calculate the camera offset and rotate the ROI mask for the new video.
+    Creates a [video_name]_config.json file as output.
+    """
+    align_video_roi(new_video, base_image, base_config, debug)

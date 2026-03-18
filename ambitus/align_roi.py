@@ -2,54 +2,51 @@ import cv2
 import numpy as np
 import json
 import os
-import click
 
-# Az eredeti, jól beállított képen lévő sötét négyzet 4 sarka.
+# The 4 corners of the dark square on the original, well-calibrated image.
 BASE_CORNERS = np.array([
     [323, 138], [511, 148], [506, 336], [314, 327]
 ], dtype=np.float32)
 
 def transform_polygon(poly_pts, cx0, cy0, cx1, cy1, angle_degrees):
-    """ Eltolja és elforgatja a JSON pontokat a talált eltérések alapján. """
+    """ Translates and rotates JSON points based on found deviations. """
     pts = np.array(poly_pts, dtype=np.float32)
     
-    # 1. Eltolás az origóba (az eredeti középponthoz képest)
+    # 1. Translation to origin (relative to original center)
     pts[:, 0] -= cx0
     pts[:, 1] -= cy0
     
-    # 2. Forgatás 
+    # 2. Rotation
     M = cv2.getRotationMatrix2D((0, 0), angle_degrees, 1.0)
     pts_hom = np.hstack([pts, np.ones((pts.shape[0], 1))])
     rotated_pts = M.dot(pts_hom.T).T
     
-    # 3. Eltolás az új középpontba
+    # 3. Translation to new center
     rotated_pts[:, 0] += cx1
     rotated_pts[:, 1] += cy1
     
     return np.int32(np.round(rotated_pts)).tolist()
 
-@click.command()
-@click.argument("new_video", type=click.Path(exists=True))
-@click.option("--base-image", default="base_reference.jpg", type=click.Path(exists=True), help="Az eredeti referenciakép (A bázis videó első frame-je)")
-@click.option("--base-config", default="arena_config_poly.json", help="Az eredeti ROI JSON fájl")
-@click.option("--debug", is_flag=True, help="Megjeleníti a vizuális eredményt")
-def align(new_video, base_image, base_config, debug):
+def align_video_roi(new_video, base_image="base_reference.jpg", base_config="arena_config_poly.json", debug=False):
+    """
+    Template matching-based automatic ROI alignment.
+    Reads the reference image and video, then creates an offset JSON configuration.
+    """
     if not os.path.exists(base_config):
-        print(f"HIBA: A bázis konfiguráció ({base_config}) nem található!")
-        return
+        print(f"ERROR: Base configuration ({base_config}) not found!")
+        return None
 
-    # --- 1. KÉP ÉS ÚJ VIDEÓ BEOLVASÁSA ---
     frame_base = cv2.imread(base_image)
     if frame_base is None:
-        print(f"HIBA: Nem sikerült beolvasni a referencia képet ({base_image})!")
-        return
+        print(f"ERROR: Failed to read reference image ({base_image})!")
+        return None
         
     cap_new = cv2.VideoCapture(new_video)
     ret_n, frame_new = cap_new.read()
     cap_new.release()
     if not ret_n: 
-        print("HIBA: Nem sikerült beolvasni az új videó első képkockáját.")
-        return
+        print("ERROR: Failed to read the first frame of the new video.")
+        return None
 
     gray_base = cv2.cvtColor(frame_base, cv2.COLOR_BGR2GRAY)
     gray_new = cv2.cvtColor(frame_new, cv2.COLOR_BGR2GRAY)
@@ -57,35 +54,30 @@ def align(new_video, base_image, base_config, debug):
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     gray_new_clahe = clahe.apply(gray_new)
 
-    # A bázis négyzet befoglaló dobozának kiszámítása
     x, y, w, h = cv2.boundingRect(BASE_CORNERS)
     padding = 15
     x1, y1 = max(0, x - padding), max(0, y - padding)
     x2, y2 = min(gray_base.shape[1], x + w + padding), min(gray_base.shape[0], y + h + padding)
     
-    # Az eredeti középpont (Forgatási és eltolási origó)
     cx0 = x1 + (x2 - x1) / 2.0
     cy0 = y1 + (y2 - y1) / 2.0
 
-    print(f"Keresem a négyzetet az új videón a(z) '{base_image}' alapján...")
+    print(f"Searching for the square in the new video based on '{base_image}'...")
     
     best_score = -1
     best_angle = 0
     best_center = (cx0, cy0)
     score_at_zero = 0
 
-    # Végignézzük -10 és +10 fok között
     for angle in range(-10, 11, 1):
         M_rot = cv2.getRotationMatrix2D((cx0, cy0), angle, 1.0)
-        # BORDER_REPLICATE: Ha a kép széle befordul, az utolsó pixelt húzza tovább
         rotated_base = cv2.warpAffine(gray_base, M_rot, (gray_base.shape[1], gray_base.shape[0]), borderMode=cv2.BORDER_REPLICATE)
         
-        # Kivágjuk a sablont a már elforgatott képből
         template = rotated_base[y1:y2, x1:x2]
         template = clahe.apply(template)
         
         res = cv2.matchTemplate(gray_new_clahe, template, cv2.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
         
         tw = x2 - x1
         th = y2 - y1
@@ -98,7 +90,6 @@ def align(new_video, base_image, base_config, debug):
             best_angle = 0
             best_center = (match_cx, match_cy)
         else:
-            # "Lustaság" (Penalty) a felesleges forgatások ellen
             angle_penalty = abs(angle) * 0.001
             required_score = score_at_zero + 0.005 + angle_penalty
             
@@ -107,10 +98,9 @@ def align(new_video, base_image, base_config, debug):
                 best_angle = angle
                 best_center = (match_cx, match_cy)
 
-    print(f"Eredmény: {(best_score*100):.1f}%-os egyezés!")
-    print(f"Eltolás X: {best_center[0] - cx0:.1f} px, Y: {best_center[1] - cy0:.1f} px. Forgatás: {best_angle} fok.")
+    print(f"Result: {(best_score*100):.1f}% match!")
+    print(f"Offset X: {best_center[0] - cx0:.1f} px, Y: {best_center[1] - cy0:.1f} px. Rotation: {best_angle} degrees.")
 
-    # --- JSON TRANSZFORMÁCIÓ ÉS MENTÉS ---
     with open(base_config, 'r') as f:
         config = json.load(f)
 
@@ -125,9 +115,8 @@ def align(new_video, base_image, base_config, debug):
     with open(output_json, 'w') as f:
         json.dump(new_config, f)
 
-    print(f"Siker! Az eltolt ROI elmentve ide: {output_json}")
+    print(f"Success! Offset ROI saved to: {output_json}")
 
-    # --- VIZUÁLIS ELLENŐRZÉS ---
     if debug:
         disp = frame_new.copy()
         cv2.drawMarker(disp, (int(best_center[0]), int(best_center[1])), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
@@ -138,9 +127,8 @@ def align(new_video, base_image, base_config, debug):
         cv2.polylines(disp, [pts_in], True, (0, 255, 255), 2)
 
         cv2.imshow("Template Match Alignment", disp)
-        print("Nyomj egy gombot a kilépéshez...")
+        print("Press any key to exit...")
         cv2.waitKey(0)
         cv2.destroyAllWindows()
-
-if __name__ == '__main__':
-    align()
+        
+    return output_json
