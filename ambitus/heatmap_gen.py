@@ -13,7 +13,9 @@ def find_video_for_csv(csv_path, search_dir="data"):
     
     # Remove the "_trajectory.csv" part
     name_without_ext = basename.replace('.csv', '')
-    if name_without_ext.endswith('_trajectory'):
+    if name_without_ext.endswith('_trajectory_filtered'):
+        name_without_ext = name_without_ext.replace('_trajectory_filtered', '')
+    elif name_without_ext.endswith('_trajectory'):
         name_without_ext = name_without_ext.replace('_trajectory', '')
         
     # Remove the tracking method suffix to get the raw video filename
@@ -138,15 +140,15 @@ def generate_heatmap(csv_path, output_path=None, sigma=15, alpha=0.8, show=True,
 @click.argument("csv_path", type=click.Path(exists=True))
 @click.option("--video-dir", default="data", help="Directory where the video files are stored (default: data)")
 @click.option("--output", default=None, help="Output image filename (optional)")
-@click.option("--sigma", default=15.0, help="Blur amount / thickness of the path (default: 35)")
+@click.option("--sigma", default=15.0, help="Blur amount / thickness of the path (default: 15)")
 @click.option("--alpha", default=0.6, help="Transparency level between 0.0 and 1.0 (default: 0.6)")
-@click.option("--no-show", is_flag=True, help="Do not display the image, just save it")
-def cli(csv_path, video_dir, output, sigma, alpha, no_show):
+@click.option("--show", is_flag=True, help="Display the image after generation")
+def cli(csv_path, video_dir, output, sigma, alpha, show):
     """
     Generates a color heatmap from the trajectory CSV data and overlays it on the original video's first frame.
     The script automatically finds the corresponding video file.
     """
-    generate_heatmap(csv_path, output_path=output, sigma=sigma, alpha=alpha, show=not no_show, video_dir=video_dir)
+    generate_heatmap(csv_path, output_path=output, sigma=sigma, alpha=alpha, show=show, video_dir=video_dir)
 
 if __name__ == '__main__':
     cli()

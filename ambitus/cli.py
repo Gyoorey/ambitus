@@ -4,7 +4,9 @@ from process_video import process_video as process_video_legacy
 from matplotlib import pyplot as plt
 from roi_selector import select_roi
 from tracker import track
-from align_roi import align_video_roi 
+from align_roi import align_video_roi
+from heatmap_gen import generate_heatmap
+from traj_filter import process_trajectory
 
 
 @click.group()
@@ -105,3 +107,36 @@ def align_roi_cmd(new_video, base_image, base_config, debug):
     Creates a [video_name]_config.json file as output.
     """
     align_video_roi(new_video, base_image, base_config, debug)
+
+@cli.command(name="heatmap")
+@click.argument("csv_path", type=click.Path(exists=True))
+@click.option("--video-dir", default="data", help="Directory where the video files are stored (default: data)")
+@click.option("--output", default=None, help="Output image filename (optional)")
+@click.option("--sigma", default=15.0, help="Blur amount / thickness of the path (default: 15)")
+@click.option("--alpha", default=0.6, help="Transparency level between 0.0 and 1.0 (default: 0.6)")
+@click.option("--show", is_flag=True, help="Display the image after generation")
+def heatmap_cmd(csv_path, video_dir, output, sigma, alpha, show):
+    """
+    Generates a color heatmap from the trajectory CSV data and overlays it on the original video's first frame.
+    The script automatically finds the corresponding video file.
+    """
+    generate_heatmap(csv_path, output_path=output, sigma=sigma, alpha=alpha, show=show, video_dir=video_dir)
+
+@cli.command(name="filter")
+@click.argument("csv_path", type=click.Path(exists=True))
+@click.option("--output", default=None, help="Output CSV filename (optional)")
+@click.option("--median-window", default=5, help="Window size for Outlier Removal (default: 5)")
+@click.option("--savgol-window", default=31, help="Window size for Low-Pass Filtering (default: 31)")
+@click.option("--plot", is_flag=True, help="Show the comparison graph")
+def filter_cmd(csv_path, output, median_window, savgol_window, plot):
+    """
+    Interpolates missing frames, removes tracking outliers, and applies a low-pass filter to the trajectory CSV.
+    Outputs integer coordinates.
+    """
+    process_trajectory(
+        csv_path, 
+        output_path=output, 
+        median_window=median_window, 
+        savgol_window=savgol_window, 
+        show_plot=plot
+    )
