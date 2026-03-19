@@ -128,7 +128,8 @@ def heatmap_cmd(csv_path, video_dir, output, sigma, alpha, show):
 @click.option("--median-window", default=5, help="Window size for Outlier Removal (default: 5)")
 @click.option("--savgol-window", default=31, help="Window size for Low-Pass Filtering (default: 31)")
 @click.option("--plot", is_flag=True, help="Show the comparison graph")
-def filter_cmd(csv_path, output, median_window, savgol_window, plot):
+@click.option("--plotly", is_flag=True, help="Use interactive Plotly graph instead of OpenCV")
+def filter_cmd(csv_path, output, median_window, savgol_window, plot, plotly):
     """
     Interpolates missing frames, removes tracking outliers, and applies a low-pass filter to the trajectory CSV.
     Outputs integer coordinates.
@@ -138,5 +139,6 @@ def filter_cmd(csv_path, output, median_window, savgol_window, plot):
         output_path=output, 
         median_window=median_window, 
         savgol_window=savgol_window, 
-        show_plot=plot
+        show_plot=plot,
+        use_plotly=plotly
     )

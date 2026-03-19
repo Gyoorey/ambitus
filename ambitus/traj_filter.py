@@ -6,6 +6,63 @@ import cv2
 from scipy.signal import savgol_filter
 from scipy.ndimage import median_filter
 
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+def draw_plotly_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filename=None):
+    """
+    Creates an interactive 1200x600 dashboard using Plotly.
+    Saves it as an HTML file and opens it in the default browser.
+    """
+    fig = make_subplots(rows=1, cols=2, subplot_titles=("X Coordinate over Time", "2D Trajectory Map (Top-Down)"))
+
+    # --- PLOT 1: X OVER TIME ---
+    fig.add_trace(go.Scatter(
+        x=times, y=xs, mode='markers', 
+        marker=dict(color='rgba(255, 100, 100, 0.5)', size=5), 
+        name='Raw Data (X)'
+    ), row=1, col=1)
+    
+    fig.add_trace(go.Scatter(
+        x=uniform_times, y=x_filtered, mode='lines', 
+        line=dict(color='blue', width=2), 
+        name='Filtered & Interpolated (X)'
+    ), row=1, col=1)
+
+    # --- PLOT 2: Y VS X MAP ---
+    fig.add_trace(go.Scatter(
+        x=xs, y=ys, mode='markers', 
+        marker=dict(color='rgba(255, 100, 100, 0.5)', size=5), 
+        name='Raw Data (Map)'
+    ), row=1, col=2)
+    
+    fig.add_trace(go.Scatter(
+        x=x_filtered, y=y_filtered, mode='lines', 
+        line=dict(color='blue', width=2), 
+        name='Filtered & Interpolated (Map)'
+    ), row=1, col=2)
+
+    # --- LAYOUT BEÁLLÍTÁSOK ---
+    # Inverz Y tengely a 2D térképen, hogy az OpenCV/Képi koordinátáknak megfeleljen
+    fig.update_yaxes(autorange="reversed", row=1, col=2)
+    
+    fig.update_xaxes(title_text="Time (sec)", row=1, col=1)
+    fig.update_yaxes(title_text="X Pixel Position", row=1, col=1)
+    
+    fig.update_xaxes(title_text="X Pixel", row=1, col=2)
+    fig.update_yaxes(title_text="Y Pixel", row=1, col=2)
+
+    fig.update_layout(title_text="Trajectory Filtering Dashboard", height=600, width=1200, hovermode="closest")
+
+    if filename:
+        os.makedirs("results", exist_ok=True)
+        html_path = os.path.join("results", f"{filename}.html")
+        fig.write_html(html_path)
+        print(f"Interactive Plotly dashboard saved to: {html_path}")
+    
+    # Megnyitja az alapértelmezett böngészőben
+    fig.show()
+
 def map_val(val, val_min, val_max, px_min, px_max):
     """ Helper function to map a data value to a pixel coordinate on the canvas. """
     # Prevent division by zero if all values are identical
@@ -16,7 +73,7 @@ def map_val(val, val_min, val_max, px_min, px_max):
     ratio = (val - val_min) / (val_max - val_min)
     return int(px_min + ratio * (px_max - px_min))
 
-def draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered):
+def draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filename=None):
     """
     Creates a 1200x600 dashboard using pure OpenCV to visualize the before/after filtering.
     Left Panel: X-Coordinate over Time.
@@ -95,11 +152,15 @@ def draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered):
     # Show the dashboard
     cv2.imshow("Trajectory Filtering Dashboard", canvas)
     print("Graph generated. Press any key on the window to close it...")
+    if filename:
+        os.makedirs("results", exist_ok=True)
+        cv2.imwrite(os.path.join("results", filename), canvas)
+        print(f"Dashboard saved to: results/{filename}")
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
 
-def process_trajectory(csv_path, output_path=None, median_window=5, savgol_window=31, show_plot=True):
+def process_trajectory(csv_path, output_path=None, median_window=5, savgol_window=31, show_plot=True, use_plotly=False):
     """
     Reads a trajectory CSV, interpolates missing frames, removes outliers, 
     applies a low-pass filter, and saves the cleaned data.
@@ -194,7 +255,12 @@ def process_trajectory(csv_path, output_path=None, median_window=5, savgol_windo
 
     # --- STEP 5: VISUALIZATION (Comparison) ---
     if show_plot:
-        draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered)
+        filename_base = os.path.splitext(os.path.basename(csv_path))[0]
+        if use_plotly:
+            draw_plotly_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filename=f"{filename_base}_plotly")
+        else:
+            draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filename=f"{filename_base}_plot.jpg")
+
 
 
 @click.command()
@@ -203,7 +269,8 @@ def process_trajectory(csv_path, output_path=None, median_window=5, savgol_windo
 @click.option("--median-window", default=5, help="Window size for Outlier Removal (default: 5)")
 @click.option("--savgol-window", default=31, help="Window size for Low-Pass Filtering (default: 31)")
 @click.option("--plot", is_flag=True, help="Show the comparison graph")
-def cli(csv_path, output, median_window, savgol_window, plot):
+@click.option("--plotly", is_flag=True, help="Use interactive Plotly graph instead of OpenCV")
+def cli(csv_path, output, median_window, savgol_window, plot, plotly):
     """
     Interpolates missing frames, removes tracking outliers, and applies a low-pass filter to the trajectory CSV.
     """
@@ -212,7 +279,8 @@ def cli(csv_path, output, median_window, savgol_window, plot):
         output_path=output, 
         median_window=median_window, 
         savgol_window=savgol_window, 
-        show_plot=plot
+        show_plot=plot,
+        use_plotly=plotly
     )
 
 if __name__ == '__main__':
