@@ -50,6 +50,14 @@ Generate a color heatmap from the trajectory CSV data and overlay it on the orig
 
 `ambitus heatmap results/45_static_trajectory_filtered.csv --show`
 
+Run pipeline (align, tracking, filtering, heatmap):
+
+`ambitus run data/45.mp4 --show --debug`
+
+Run pipeline on a directory (align, tracking, filtering, heatmap):
+
+`ambitus run_dir data`
+
 Available legacy methods: dense optical flow with Farneback (dof), simple+Kalman-Filter (kf), simple+Optical-flow (of), pure opcital flow  (pure_of), Motion History Image (mhi)
 
 `ambitus analyze-exp data/45.mp4 --show --skip-seconds 0.0 --debug --method dof`
