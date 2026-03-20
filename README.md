@@ -42,9 +42,9 @@ ROI alignment based on reference square coords (base_reference.jpg): use --debug
 
 `ambitus align_roi data/45.mp4 --debug`
 
-Interpolate missing frames, remove tracking outliers, and apply a low-pass filter to the trajectory CSV:
+Interpolate missing frames, remove tracking outliers, and apply a low-pass filter to the trajectory CSV. Use only --plot for cv2, use --plot and --plotly for html.
 
-`ambitus filter results/45_static_trajectory.csv --plot`
+`ambitus filter results/45_static_trajectory.csv --plot --plotly`
 
 Generate a color heatmap from the trajectory CSV data and overlay it on the original video's first frame. The script automatically finds the corresponding video file:
 
