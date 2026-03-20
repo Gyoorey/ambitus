@@ -110,7 +110,9 @@ def align_video_roi(new_video, base_image="base_reference.jpg", base_config="are
     }
 
     video_filename = os.path.splitext(os.path.basename(new_video))[0]
-    output_json = f"{video_filename}_config.json"
+    base_out_dir = os.path.join("results", video_filename)
+    os.makedirs(base_out_dir, exist_ok=True)
+    output_json = os.path.join(base_out_dir, f"{video_filename}_config.json")
     
     with open(output_json, 'w') as f:
         json.dump(new_config, f)
@@ -120,7 +122,7 @@ def align_video_roi(new_video, base_image="base_reference.jpg", base_config="are
     if debug:
         disp = frame_new.copy()
         cv2.drawMarker(disp, (int(best_center[0]), int(best_center[1])), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
-
+        
         pts_out = np.int32(new_config["outer_poly"]).reshape((-1, 1, 2))
         pts_in = np.int32(new_config["inner_poly"]).reshape((-1, 1, 2))
         cv2.polylines(disp, [pts_out], True, (0, 255, 255), 2)

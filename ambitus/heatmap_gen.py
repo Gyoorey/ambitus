@@ -122,7 +122,8 @@ def generate_heatmap(csv_path, output_path=None, sigma=15, alpha=0.8, show=True,
     # 9. Save the resulting image
     if output_path is None:
         filename = os.path.splitext(os.path.basename(csv_path))[0]
-        output_path = os.path.join("results", f"{filename}_heatmap.jpg")
+        base_dir = os.path.dirname(csv_path)
+        output_path = os.path.join(base_dir, f"{filename}_heatmap.jpg")
         
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     cv2.imwrite(output_path, overlay)

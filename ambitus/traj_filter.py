@@ -9,7 +9,7 @@ from scipy.ndimage import median_filter
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-def draw_plotly_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filename=None):
+def draw_plotly_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filename=None, show_plot=False):
     """
     Creates an interactive 1200x600 dashboard using Plotly.
     Saves it as an HTML file and opens it in the default browser.
@@ -42,8 +42,8 @@ def draw_plotly_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filen
         name='Filtered & Interpolated (Map)'
     ), row=1, col=2)
 
-    # --- LAYOUT BEÁLLÍTÁSOK ---
-    # Inverz Y tengely a 2D térképen, hogy az OpenCV/Képi koordinátáknak megfeleljen
+    # --- LAYOUT SETTINGS ---
+    # Inverse Y axis on the 2D map to match OpenCV/Image coordinates
     fig.update_yaxes(autorange="reversed", row=1, col=2)
     
     fig.update_xaxes(title_text="Time (sec)", row=1, col=1)
@@ -55,13 +55,12 @@ def draw_plotly_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filen
     fig.update_layout(title_text="Trajectory Filtering Dashboard", height=600, width=1200, hovermode="closest")
 
     if filename:
-        os.makedirs("results", exist_ok=True)
-        html_path = os.path.join("results", f"{filename}.html")
-        fig.write_html(html_path)
-        print(f"Interactive Plotly dashboard saved to: {html_path}")
+        fig.write_html(filename)
+        print(f"Interactive Plotly dashboard saved to: {filename}")
     
-    # Megnyitja az alapértelmezett böngészőben
-    fig.show()
+    # Opens in the default browser
+    if show_plot:
+        fig.show()
 
 def map_val(val, val_min, val_max, px_min, px_max):
     """ Helper function to map a data value to a pixel coordinate on the canvas. """
@@ -73,7 +72,7 @@ def map_val(val, val_min, val_max, px_min, px_max):
     ratio = (val - val_min) / (val_max - val_min)
     return int(px_min + ratio * (px_max - px_min))
 
-def draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filename=None):
+def draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filename=None, show_plot=False):
     """
     Creates a 1200x600 dashboard using pure OpenCV to visualize the before/after filtering.
     Left Panel: X-Coordinate over Time.
@@ -86,11 +85,11 @@ def draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, f
     # --- Define Plot Boundaries (Margins) ---
     # Plot 1 (Left): X vs Time
     p1_x_min, p1_x_max = 80, 550
-    p1_y_min, p1_y_max = 520, 80 # Inverted: smaller pixel value = higher up
+    p1_y_min, p1_y_max = 520, 80  # Inverted: smaller pixel value = higher up
     
     # Plot 2 (Right): Y vs X (Top-Down Map)
     p2_x_min, p2_x_max = 680, 1150
-    p2_y_min, p2_y_max = 80, 520 # Direct mapping (Y goes down in images)
+    p2_y_min, p2_y_max = 80, 520  # Direct mapping (Y goes down in images)
 
     # Calculate data bounds
     t_min, t_max = np.min(times), np.max(times)
@@ -113,7 +112,7 @@ def draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, f
     for t, x in zip(times, xs):
         px = map_val(t, t_min, t_max, p1_x_min, p1_x_max)
         py = map_val(x, x_min, x_max, p1_y_min, p1_y_max)
-        cv2.circle(canvas, (px, py), 2, (150, 150, 255), -1) # BGR: Light Red
+        cv2.circle(canvas, (px, py), 2, (150, 150, 255), -1)  # BGR: Light Red
         
     # Draw filtered line (Blue)
     pts_p1 = []
@@ -123,7 +122,7 @@ def draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, f
         pts_p1.append([px, py])
     
     pts_p1 = np.array(pts_p1, np.int32).reshape((-1, 1, 2))
-    cv2.polylines(canvas, [pts_p1], False, (255, 0, 0), 2) # BGR: Blue
+    cv2.polylines(canvas, [pts_p1], False, (255, 0, 0), 2)  # BGR: Blue
 
     # --- DRAW PLOT 2: Y VS X MAP ---
     # Draw raw points (Light Red)
@@ -149,15 +148,16 @@ def draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, f
     cv2.line(canvas, (20, 585), (40, 585), (255, 0, 0), 3)
     cv2.putText(canvas, "Filtered & Interpolated", (45, 590), font, 0.6, (0, 0, 0), 1)
 
-    # Show the dashboard
-    cv2.imshow("Trajectory Filtering Dashboard", canvas)
-    print("Graph generated. Press any key on the window to close it...")
     if filename:
-        os.makedirs("results", exist_ok=True)
-        cv2.imwrite(os.path.join("results", filename), canvas)
-        print(f"Dashboard saved to: results/{filename}")
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+        cv2.imwrite(filename, canvas)
+        print(f"Dashboard saved to: {filename}")
+
+    if show_plot:
+        # Show the dashboard
+        cv2.imshow("Trajectory Filtering Dashboard", canvas)
+        print("Graph generated. Press any key on the window to close it...")
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
 
 
 def process_trajectory(csv_path, output_path=None, median_window=5, savgol_window=31, show_plot=True, use_plotly=False):
@@ -228,12 +228,12 @@ def process_trajectory(csv_path, output_path=None, median_window=5, savgol_windo
     savgol_window = min(savgol_window, len(x_med) - 1)
     if savgol_window % 2 == 0: savgol_window -= 1
 
-    poly_order = 3 # 3rd degree polynomial fits the curves nicely
+    poly_order = 3  # 3rd degree polynomial fits the curves nicely
     if savgol_window > poly_order:
         x_filtered = savgol_filter(x_med, window_length=savgol_window, polyorder=poly_order)
         y_filtered = savgol_filter(y_med, window_length=savgol_window, polyorder=poly_order)
     else:
-        x_filtered, y_filtered = x_med, y_med # Fallback if data is extremely short
+        x_filtered, y_filtered = x_med, y_med  # Fallback if data is extremely short
 
     # Convert the final filtered coordinates strictly to integers
     x_filtered = np.round(x_filtered).astype(int)
@@ -254,12 +254,14 @@ def process_trajectory(csv_path, output_path=None, median_window=5, savgol_windo
     print(f"Success! Filtered trajectory saved to: {output_path}")
 
     # --- STEP 5: VISUALIZATION (Comparison) ---
-    if show_plot:
-        filename_base = os.path.splitext(os.path.basename(csv_path))[0]
-        if use_plotly:
-            draw_plotly_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filename=f"{filename_base}_plotly")
-        else:
-            draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filename=f"{filename_base}_plot.jpg")
+    base_dir = os.path.dirname(csv_path)
+    filename_base = os.path.splitext(os.path.basename(csv_path))[0]
+    if use_plotly:
+        plot_path = os.path.join(base_dir, f"{filename_base}_plotly.html")
+        draw_plotly_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filename=plot_path, show_plot=show_plot)
+    else:
+        plot_path = os.path.join(base_dir, f"{filename_base}_plot.jpg")
+        draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filename=plot_path, show_plot=show_plot)
 
 
 

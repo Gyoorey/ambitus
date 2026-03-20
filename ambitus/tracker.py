@@ -20,7 +20,6 @@ class RatTracker:
 
     def update(self, measured_coords):
         if measured_coords is not None:
-            self.missed_frames = 0
             self.is_initialized = True
             self.last_valid_pos = measured_coords
             return measured_coords
@@ -324,8 +323,10 @@ def track(video_path, config_file="arena_config_poly.json", method='simple', sho
 
     if len(trajectory_data) > 0:
         video_filename = os.path.splitext(os.path.basename(video_path))[0]
+        base_out_dir = os.path.join("results", video_filename)
+        os.makedirs(base_out_dir, exist_ok=True)
         csv_output_file = f"{video_filename}_{method}_trajectory.csv"
-        output_path = os.path.join("results", csv_output_file)
+        output_path = os.path.join(base_out_dir, csv_output_file)
         
         # Drop the 4th is_predicted element for saving
         final_csv_data = [(t, x, y) for (t, x, y, is_pred) in trajectory_data]
@@ -340,8 +341,19 @@ def track(video_path, config_file="arena_config_poly.json", method='simple', sho
         for point in trajectory_data:
             cv2.circle(final_background_image, (point[1], point[2]), 2, (0, 0, 255), -1)
 
-        output_image = os.path.join("results", f"{video_filename}_{method}_trajectory_map.jpg")
+        output_image = os.path.join(base_out_dir, f"{video_filename}_{method}_trajectory_map.jpg")
         cv2.imwrite(output_image, final_background_image)
-        print(f"Done! ({method})")
+        print(f"Done! ({method}), missed frames: {tracker.missed_frames}, trajectory points: {len(trajectory_data)}")
+        stats_output = os.path.join(base_out_dir, f"{video_filename}_{method}_statistics.txt")
+        with open(stats_output, 'w') as f:
+            f.write(f"Tracking Statistics\n")
+            f.write(f"===================\n\n")
+            f.write(f"Video: {video_filename}\n")
+            f.write(f"Method: {method}\n")
+            f.write(f"Total Frames Processed: {frame_counter - start_frame}\n")
+            f.write(f"Trajectory Points: {len(trajectory_data)}\n")
+            f.write(f"Missed Frames: {tracker.missed_frames}\n")
+            f.write(f"Duration (sec): {round(timestamp_sec, 2)}\n")
+        print(f"Statistics saved to: {stats_output}")
     else:
         print("\nNo data recorded.")
