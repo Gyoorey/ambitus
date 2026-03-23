@@ -28,6 +28,8 @@ Convert .mpg files to compatible .mp4 videos before processing.
 Example:  
 `ffmpeg -i ambitus/data/LE_17_1_45.mpg -vf "yadif,scale=768:576,setsar=1" -pix_fmt yuv420p ambitus/data/45.mp4`
 
+Also supports .mpg format with imageio, using yadif,scale=768:576,setsar=1 parameters.
+
 ## Testing
 
 Run a basic test command to verify everything works:
