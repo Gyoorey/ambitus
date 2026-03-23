@@ -3,6 +3,7 @@ import numpy as np
 import csv
 import os
 import click
+import imageio
 
 def find_video_for_csv(csv_path, search_dir="data"):
     """
@@ -26,7 +27,7 @@ def find_video_for_csv(csv_path, search_dir="data"):
             break
             
     # Possible video extensions and directories to search
-    extensions = ['.mp4']
+    extensions = ['.mp4', '.mpg'] 
     search_dirs = [search_dir, '.', '..'] 
     
     for d in search_dirs:
@@ -56,9 +57,22 @@ def generate_heatmap(csv_path, output_path=None, sigma=15, alpha=0.8, show=True,
     print(f"Found corresponding video: {video_path}")
 
     # 2. Read the first frame of the video to use as the background
-    cap = cv2.VideoCapture(video_path)
-    ret, frame = cap.read()
-    cap.release()
+    if video_path.lower().endswith('.mpg'):
+        input_params = []
+        output_params = [
+            '-vf', 'yadif,scale=768:576,setsar=1',
+        ]
+        reader = imageio.get_reader(video_path, 'ffmpeg', 
+                                    input_params=input_params, 
+                                    output_params=output_params )
+        frame = reader.get_data(0)
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        reader.close()
+        ret = True
+    else:
+        cap = cv2.VideoCapture(video_path)
+        ret, frame = cap.read()
+        cap.release()
     
     if not ret:
         print("ERROR: Failed to read the first frame of the video.")

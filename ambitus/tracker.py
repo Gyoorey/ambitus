@@ -3,6 +3,7 @@ import numpy as np
 import json
 import os
 import csv
+import imageio
 
 # --- CONSTANTS ---
 MAX_JUMP_DIST = 100 
@@ -165,22 +166,49 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
     return np.hstack([frame, right_sidebar])
 
 # --- MAIN TRACKING LOGIC ---
-def track(video_path, config_file="arena_config_poly.json", method='simple', show_traj=False, debug=False, skip_seconds=0.0, min_area=200):
+def track(video_path, config_file="arena_config_poly.json", method='simple', show_traj=False, debug=False, skip_seconds=0.0, min_area=200, output_dir=None):
     config = load_config(config_file)
     if config is None: return
 
     inner_pts_array = np.array(config["inner_poly"], dtype=np.int32)
     outer_pts_array = np.array(config["outer_poly"], dtype=np.int32)
 
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened(): return
+    is_mpg = video_path.lower().endswith('.mpg')
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    start_frame = int(skip_seconds * fps)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    if is_mpg:
+        input_params = []
+        output_params = [
+            '-vf', 'yadif,scale=768:576,setsar=1',
+        ]
+        reader = imageio.get_reader(video_path, 'ffmpeg', 
+                                    input_params=input_params, 
+                                    output_params=output_params)
+        meta = reader.get_meta_data()
+        fps = meta.get('fps', 25.0)
+        try:
+            total_frames = reader.count_frames()
+        except:
+            total_frames = 0
+            
+        start_frame = int(skip_seconds * fps)
+        
+        try:
+            if start_frame > 0:
+                reader.set_image_index(start_frame)
+            first_frame = reader.get_next_data()
+            first_frame = cv2.cvtColor(first_frame, cv2.COLOR_RGB2BGR)
+            ret = True
+        except:
+            ret = False
+    else:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened(): return
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        start_frame = int(skip_seconds * fps)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        ret, first_frame = cap.read()
 
-    ret, first_frame = cap.read()
     if not ret: return
 
     final_background_image = first_frame.copy()
@@ -210,14 +238,24 @@ def track(video_path, config_file="arena_config_poly.json", method='simple', sho
     visualization_active = show_traj or debug
 
     while True:
-        ret, frame = cap.read()
+        if is_mpg:
+            try:
+                frame = reader.get_next_data()
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                ret = True
+                timestamp_sec = frame_counter / fps
+            except (IndexError, Exception):
+                ret = False
+        else:
+            ret, frame = cap.read()
+            timestamp_sec = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+
         if not ret: break
 
         frame_counter += 1
         if not visualization_active and frame_counter % 100 == 0:
             print(f"\rProcessed: {frame_counter}/{total_frames} frames", end="")
 
-        timestamp_sec = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray = clahe.apply(gray)
         gray_blurred = cv2.GaussianBlur(gray, (7, 7), 0)
@@ -318,15 +356,22 @@ def track(video_path, config_file="arena_config_poly.json", method='simple', sho
                 print("\nInterrupted.")
                 break
 
-    cap.release()
+    if is_mpg:
+        reader.close()
+    else:
+        cap.release()
+    
     if visualization_active: cv2.destroyAllWindows()
 
     if len(trajectory_data) > 0:
         video_filename = os.path.splitext(os.path.basename(video_path))[0]
-        base_out_dir = os.path.join("results", video_filename)
-        os.makedirs(base_out_dir, exist_ok=True)
+
+        if output_dir is None:
+            output_dir = os.path.join("results", video_filename)
+
+        os.makedirs(output_dir, exist_ok=True)
         csv_output_file = f"{video_filename}_{method}_trajectory.csv"
-        output_path = os.path.join(base_out_dir, csv_output_file)
+        output_path = os.path.join(output_dir, csv_output_file)
         
         # Drop the 4th is_predicted element for saving
         final_csv_data = [(t, x, y) for (t, x, y, is_pred) in trajectory_data]
@@ -341,10 +386,10 @@ def track(video_path, config_file="arena_config_poly.json", method='simple', sho
         for point in trajectory_data:
             cv2.circle(final_background_image, (point[1], point[2]), 2, (0, 0, 255), -1)
 
-        output_image = os.path.join(base_out_dir, f"{video_filename}_{method}_trajectory_map.jpg")
+        output_image = os.path.join(output_dir, f"{video_filename}_{method}_trajectory_map.jpg")
         cv2.imwrite(output_image, final_background_image)
         print(f"Done! ({method}), missed frames: {tracker.missed_frames}, trajectory points: {len(trajectory_data)}")
-        stats_output = os.path.join(base_out_dir, f"{video_filename}_{method}_statistics.txt")
+        stats_output = os.path.join(output_dir, f"{video_filename}_{method}_statistics.txt")
         with open(stats_output, 'w') as f:
             f.write(f"Tracking Statistics\n")
             f.write(f"===================\n\n")

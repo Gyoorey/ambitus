@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import json
 import os
+import imageio 
 
 # The 4 corners of the dark square on the original, well-calibrated image.
 BASE_CORNERS = np.array([
@@ -27,7 +28,7 @@ def transform_polygon(poly_pts, cx0, cy0, cx1, cy1, angle_degrees):
     
     return np.int32(np.round(rotated_pts)).tolist()
 
-def align_video_roi(new_video, base_image="base_reference.jpg", base_config="arena_config_poly.json", debug=False):
+def align_video_roi(new_video, base_image="base_reference.jpg", base_config="arena_config_poly.json", debug=False, output_dir=None):
     """
     Template matching-based automatic ROI alignment.
     Reads the reference image and video, then creates an offset JSON configuration.
@@ -41,11 +42,25 @@ def align_video_roi(new_video, base_image="base_reference.jpg", base_config="are
         print(f"ERROR: Failed to read reference image ({base_image})!")
         return None
         
-    cap_new = cv2.VideoCapture(new_video)
-    ret_n, frame_new = cap_new.read()
-    cap_new.release()
+    if new_video.lower().endswith('.mpg'):
+        input_params = []
+        output_params = [
+            '-vf', 'yadif,scale=768:576,setsar=1',
+        ]
+        reader = imageio.get_reader(new_video, 'ffmpeg', 
+                                    input_params=input_params, 
+                                    output_params=output_params )
+        frame_new = reader.get_data(0)
+        frame_new = cv2.cvtColor(frame_new, cv2.COLOR_RGB2BGR) 
+        reader.close()
+        ret_n = True
+    else:
+        cap_new = cv2.VideoCapture(new_video)
+        ret_n, frame_new = cap_new.read()
+        cap_new.release()
+
     if not ret_n: 
-        print("ERROR: Failed to read the first frame of the new video.")
+        print("ERROR: Failed to read the video.")
         return None
 
     gray_base = cv2.cvtColor(frame_base, cv2.COLOR_BGR2GRAY)
@@ -110,9 +125,10 @@ def align_video_roi(new_video, base_image="base_reference.jpg", base_config="are
     }
 
     video_filename = os.path.splitext(os.path.basename(new_video))[0]
-    base_out_dir = os.path.join("results", video_filename)
-    os.makedirs(base_out_dir, exist_ok=True)
-    output_json = os.path.join(base_out_dir, f"{video_filename}_config.json")
+    if output_dir is None:
+        output_dir = os.path.join("results", video_filename)
+    os.makedirs(output_dir, exist_ok=True)
+    output_json = os.path.join(output_dir, f"{video_filename}_config.json")
     
     with open(output_json, 'w') as f:
         json.dump(new_config, f)

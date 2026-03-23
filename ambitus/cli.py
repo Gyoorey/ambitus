@@ -132,13 +132,15 @@ def heatmap_cmd(csv_path, video_dir, output, sigma, alpha, show):
 @click.option("--savgol-window", default=31, help="Window size for Low-Pass Filtering (default: 31)")
 @click.option("--plot", is_flag=True, help="Show the comparison graph")
 @click.option("--plotly", is_flag=True, help="Use interactive Plotly graph instead of OpenCV")
-def filter_cmd(csv_path, output, median_window, savgol_window, plot, plotly):
+@click.option("--config", default="arena_config_poly.json", help="Path to ROI config JSON file")
+def filter_cmd(csv_path, config, output, median_window, savgol_window, plot, plotly):
     """
     Interpolates missing frames, removes tracking outliers, and applies a low-pass filter to the trajectory CSV.
     Outputs integer coordinates.
     """
     process_trajectory(
-        csv_path, 
+        csv_path,
+        config_path=config, 
         output_path=output, 
         median_window=median_window, 
         savgol_window=savgol_window, 
@@ -159,31 +161,35 @@ def filter_cmd(csv_path, output, median_window, savgol_window, plot, plotly):
 @click.option("--alpha", default=0.6, help="Transparency level for heatmap")
 @click.option("--show", is_flag=True, help="Display results")
 @click.option("--debug", is_flag=True, help="Show debug views")
-def run_pipeline(video_path, base_image, base_config, method, min_area, skip_seconds, median_window, savgol_window, sigma, alpha, show, debug):
+@click.option("--out-dir", default=None, help="Output directory override")
+def run_pipeline(video_path, base_image, base_config, method, min_area, skip_seconds, median_window, savgol_window, sigma, alpha, show, debug, out_dir):
     """Run the complete pipeline: align ROI, track, filter, and generate heatmap."""
 
     # Example: ambitus run data/LE_17_1_45.mp4 --method static --show --debug
     # Options: --skip-seconds 0 --median-window 5 --savgol-window 31 --sigma 15 --alpha 0.6 
     
-    video_name = Path(video_path).stem
-    result_dir = os.path.join("results", video_name)
+    v_path = Path(video_path).resolve()
+    video_name = v_path.stem
+    if out_dir is None:
+        result_dir = str(v_path.parent.parent / "results" / video_name)
+    else:
+        result_dir = out_dir
     os.makedirs(result_dir, exist_ok=True)
     aligned_config = os.path.join(result_dir, f"{video_name}_config.json")
     csv_file = os.path.join(result_dir, f"{video_name}_{method}_trajectory.csv")
     filtered_csv = os.path.join(result_dir, f"{video_name}_{method}_trajectory_filtered.csv")
-    heatmap_file = os.path.join(result_dir, f"{video_name}_{method}_heatmap.jpg")
     
     click.echo("Step 1: Aligning ROI...")
-    align_video_roi(video_path, base_image, base_config, debug)
+    align_video_roi(video_path, base_image, base_config, debug, output_dir=result_dir)
     
     click.echo("Step 2: Tracking...")
-    track(video_path, aligned_config, method, show, debug, skip_seconds, min_area)
+    track(video_path, aligned_config, method, show, debug, skip_seconds, min_area, output_dir=result_dir)
     
     click.echo("Step 3: Filtering trajectory...")
-    process_trajectory(csv_file, None, median_window, savgol_window, show, True)
+    process_trajectory(csv_file, aligned_config, None, median_window, savgol_window, show, True)
     
     click.echo("Step 4: Generating heatmap...")
-    generate_heatmap(filtered_csv, None, sigma, alpha, show, "data")
+    generate_heatmap(filtered_csv, None, sigma, alpha, show, video_dir=str(v_path.parent))
     
     click.echo(f"Pipeline complete! Results saved to {result_dir}")
 
@@ -202,13 +208,25 @@ def run_pipeline(video_path, base_image, base_config, method, min_area, skip_sec
 @click.option("--debug", is_flag=True, help="Show debug views")
 def run_dir_pipeline(video_dir, base_image, base_config, method, min_area, skip_seconds, median_window, savgol_window, sigma, alpha, show, debug):
     """Run the complete pipeline on all videos in a directory."""
-    video_extensions = ['.mp4']
-    video_files = [f for f in Path(video_dir).iterdir() if f.suffix.lower() in video_extensions]
+
+
+    root_data_dir = Path(video_dir).resolve()
+    results_root_dir = root_data_dir.parent / "results"
+    video_files = list(root_data_dir.rglob('*.mp4'))
+
+    if not video_files:
+        click.echo(f"No .mp4 files found in {video_dir}. Searching for .mpg files...")
+        video_files = list(root_data_dir.rglob('*.mpg'))
     
     if not video_files:
-        click.echo(f"No video files found in {video_dir}")
+        click.echo(f"No .mp4 or .mpg files found in {video_dir} or its subdirectories.")
         return
     
+    click.echo(f"Found {len(video_files)} videos.")
+
     for video_path in sorted(video_files):
         click.echo(f"\nProcessing: {video_path.name}")
-        run_pipeline.callback(str(video_path), base_image, base_config, method, min_area, skip_seconds, median_window, savgol_window, sigma, alpha, show, debug)
+        rel_path = video_path.parent.relative_to(root_data_dir)
+        target_result_dir = str(results_root_dir / rel_path / video_path.stem)
+        run_pipeline.callback(str(video_path), base_image, base_config, method, min_area, skip_seconds,
+                               median_window, savgol_window, sigma, alpha, show, debug, target_result_dir)

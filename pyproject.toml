@@ -24,6 +24,8 @@ dependencies = [
     "scipy",
     "matplotlib",
     "scikit-image",
+    "plotly",
+    "imageio[ffmpeg]",
 ]
 
 [project.scripts]
