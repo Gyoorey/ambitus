@@ -230,3 +230,66 @@ def run_dir_pipeline(video_dir, base_image, base_config, method, min_area, skip_
         target_result_dir = str(results_root_dir / rel_path / video_path.stem)
         run_pipeline.callback(str(video_path), base_image, base_config, method, min_area, skip_seconds,
                                median_window, savgol_window, sigma, alpha, show, debug, target_result_dir)
+        
+@cli.command(name="filter_dir")
+@click.argument("results_dir", type=click.Path(exists=True))
+@click.option("--output-dir", default=None, help="Output directory for filtered CSVs (optional)")
+@click.option("--median-window", default=5, help="Window size for Outlier Removal (default: 5)")
+@click.option("--savgol-window", default=31, help="Window size for Low-Pass Filtering (default: 31)")
+@click.option("--plot", is_flag=True, help="Show the comparison graph")
+@click.option("--plotly", is_flag=True, help="Use interactive Plotly graph instead of OpenCV")
+@click.option("--heatmap", is_flag=True, help="Generate heatmap for filtered trajectories")
+@click.option("--config", default="arena_config_poly.json", help="Path to ROI config JSON file")
+def filter_dir_cmd(results_dir, output_dir, median_window, savgol_window, plot, plotly, heatmap, config):
+    """Apply trajectory filtering to all CSV files in results subdirectories."""
+    root_dir = Path(results_dir).resolve()
+    csv_files = list(root_dir.rglob('*_trajectory.csv'))
+    
+    if not csv_files:
+        click.echo(f"No trajectory CSV files found in {results_dir}.")
+        return
+    
+    click.echo(f"Found {len(csv_files)} CSV files.")
+    
+    if output_dir is None:
+        output_dir = root_dir
+    else:
+        output_dir = Path(output_dir).resolve()
+    os.makedirs(output_dir, exist_ok=True)
+    
+    for csv_file in sorted(csv_files):
+        click.echo(f"\nFiltering: {csv_file.name}")
+        video_name = csv_file.parent.name
+        output_path = os.path.join(output_dir, video_name, f"{csv_file.stem}_filtered.csv")
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        process_trajectory(
+            str(csv_file),
+            config_path=config,
+            output_path=output_path,
+            median_window=median_window,
+            savgol_window=savgol_window,
+            show_plot=plot,
+            use_plotly=plotly
+        )
+        
+        if heatmap:
+            click.echo(f"Generating heatmap for: {csv_file.name}")
+            heatmap_output = os.path.join(os.path.dirname(output_path), f"{csv_file.stem}_filtered_heatmap.jpg")
+            # Extract video name by removing method suffix and trajectory info
+            csv_name = csv_file.stem  # e.g., "video_name_simple_trajectory"
+            video_name = None
+            for method_suffix in ['_simple', '_static', '_dof', '_kf', '_of', '_sub_dof_fusion', '_pure_of', '_mhi']:
+                if csv_name.endswith(method_suffix + '_trajectory'):
+                    video_name = csv_name[:-len(method_suffix + '_trajectory')]
+                    break
+            
+            if video_name:
+                # Search for the video file in root folder and all subfolders
+                video_files = list(root_dir.parent.rglob(f'{video_name}.mp4')) + list(root_dir.parent.rglob(f'{video_name}.mpg'))
+                if video_files:
+                    video_dir = str(video_files[0].parent)
+                    generate_heatmap(output_path, output_path=heatmap_output, sigma=15.0, alpha=0.6, show=False, video_dir=video_dir)
+                else:
+                    click.echo(f"Warning: Video file for {video_name} not found.")
+    
+    click.echo(f"\nFiltering complete! Results saved to {output_dir}")

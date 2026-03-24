@@ -149,7 +149,7 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
     y_off, line_h = 30, 30
     status_color = (0, 255, 0)
     status_text = "TRACKING"
-    if missed > 0:
+    if missed > 0 and final_pos[0] is None:
         status_color = (0, 0, 255)
         status_text = "LOST / NO DETECT"
 
