@@ -48,6 +48,10 @@ Interpolate missing frames, remove tracking outliers, and apply a low-pass filte
 
 `ambitus filter results/45_static_trajectory.csv --plot --plotly`
 
+Batch filtering on a directory, also saving the plotly html and generating a heatmap image:
+
+`ambitus filter_dir results/ --plotly --heatmap`
+
 Generate a color heatmap from the trajectory CSV data and overlay it on the original video's first frame. The script automatically finds the corresponding video file:
 
 `ambitus heatmap results/45_static_trajectory_filtered.csv --show`
@@ -59,6 +63,10 @@ Run pipeline (align, tracking, filtering, heatmap):
 Run pipeline on a directory (align, tracking, filtering, heatmap):
 
 `ambitus run_dir data`
+
+Run a playback on a filtered results. Automatically selects the csv for the given method and searches the video. The "data" folder must be next to the results.
+
+`ambitus playback results/<video_dir> --method <method>`
 
 Available legacy methods: dense optical flow with Farneback (dof), simple+Kalman-Filter (kf), simple+Optical-flow (of), pure opcital flow  (pure_of), Motion History Image (mhi)
 
