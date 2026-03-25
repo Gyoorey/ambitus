@@ -131,6 +131,171 @@ def get_robust_center(fgmask):
 
     return (x_median, y_median), (x_dev, y_dev)
 
+# ==============================================================================
+# BACKGROUND GENERATION (Quiet Window Detection)
+# ==============================================================================
+def find_quiet_window(video_path, is_mpg, reader, cap, fps, search_seconds=60.0, window_sec=5.0, method='sad'):
+    """
+    Scans the beginning of the video to find the most stable, motionless period.
+    
+    Args:
+        method (str): 'sad' for Sum of Absolute Differences (default), or 'intensity' for intensity variance
+    
+    Returns:
+        int: Start frame index of the quietest window
+    """
+    print(f"Scanning the first {search_seconds}s for a clean background window using {method} method...")
+    
+    scale = 0.2 
+    max_frames = int(search_seconds * fps)
+    window_frames = int(window_sec * fps)
+    
+    # Ensure we start from frame 0
+    if is_mpg:
+        try:
+            reader.set_image_index(0)
+        except:
+            pass
+    else:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    
+    if method == 'intensity':
+        intensity_array = []
+        
+        for i in range(max_frames):
+            if is_mpg:
+                try:
+                    frame = reader.get_next_data()
+                    ret = True
+                except:
+                    ret = False
+            else:
+                ret, frame = cap.read()
+                
+            if not ret: break
+                
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if not is_mpg else cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            small = cv2.resize(gray, (0, 0), fx=scale, fy=scale)
+            intensity_array.append(np.sum(small))
+
+        if len(intensity_array) < window_frames:
+            print("WARNING: Video is too short to find a quiet window. Using frame 0.")
+            return 0
+
+        # Signal processing pipeline: Mean subtraction -> Median filter -> Abs -> Sliding STD
+        mean_intensity = np.mean(intensity_array)
+        normalized_intensity = np.array(intensity_array) - mean_intensity
+        
+        normalized_intensity = np.array([
+            np.median(normalized_intensity[max(0, i-3):min(len(normalized_intensity), i+4)]) 
+            for i in range(len(normalized_intensity))
+        ])
+        
+        normalized_intensity = np.abs(normalized_intensity)  
+        
+        std_window = 35
+        normalized_intensity = np.array([
+            np.std(normalized_intensity[max(0, i-std_window//2):min(len(normalized_intensity), i+(std_window//2)+1)]) 
+            for i in range(len(normalized_intensity))
+        ])
+
+        motion_profile = normalized_intensity
+        
+    else:  # method == 'sad' (default)
+        motion_profile = []
+        prev_gray = None
+        
+        for i in range(max_frames):
+            if is_mpg:
+                try:
+                    frame = reader.get_next_data()
+                    ret = True
+                except:
+                    ret = False
+            else:
+                ret, frame = cap.read()
+                
+            if not ret: break
+                
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if not is_mpg else cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            small = cv2.resize(gray, (0, 0), fx=scale, fy=scale)
+            
+            if prev_gray is not None:
+                diff = cv2.absdiff(small, prev_gray)
+                motion_score = np.sum(diff)
+                motion_profile.append(motion_score)
+            else:
+                motion_profile.append(0)
+                
+            prev_gray = small
+
+        if len(motion_profile) < window_frames:
+            print("WARNING: Video is too short to find a quiet window. Using frame 0.")
+            return 0
+
+    # --- FIND THE QUIETEST WINDOW ---
+    min_avg_motion = float('inf')
+    best_start_frame = 0
+    
+    for i in range(len(motion_profile) - window_frames):
+        window_slice = motion_profile[i : i + window_frames]
+        score = np.mean(window_slice) + np.std(window_slice)
+        
+        if score < min_avg_motion:
+            min_avg_motion = score
+            best_start_frame = i
+            
+    best_start_sec = best_start_frame / fps
+    print(f"Found quietest {window_sec}s window starting at {round(best_start_sec, 2)}s.")
+    
+    return best_start_frame
+
+def generate_median_background(video_path, is_mpg, reader, cap, start_frame, fps, window_sec=5.0, num_samples=30):
+    """
+    Extracts 'num_samples' frames evenly spaced across the quiet window 
+    and calculates their pixel-wise median to create a flawless background.
+    """
+    print("Generating perfect median background from the quiet window...")
+    frames = []
+    
+    # Calculate the step size to get exactly 'num_samples' frames within the window
+    window_frames = int(window_sec * fps)
+    step = max(1, window_frames // num_samples)
+    
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
+    
+    for i in range(0, window_frames, step):
+        target_frame = start_frame + i
+        
+        if is_mpg:
+            try:
+                reader.set_image_index(target_frame)
+                frame = reader.get_next_data()
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                ret = True
+            except:
+                ret = False
+        else:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            ret, frame = cap.read()
+            
+        if ret:
+            # Apply the exact same preprocessing as in the main tracking loop
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = clahe.apply(gray)
+            gray_blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+            frames.append(gray_blurred)
+            
+    if not frames:
+        print("ERROR: Failed to extract frames for median background!")
+        return None
+        
+    # Calculate the pixel-wise median across all collected frames
+    median_bg = np.median(frames, axis=0).astype(np.float32)
+    print("Median background generation complete.")
+    
+    return median_bg
+
 def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
     """ Clean debug view builder. """
     h, w = frame.shape[:2]
@@ -226,12 +391,33 @@ def track(video_path, config_file="arena_config_poly.json", method='simple', sho
     elif method == 'static':
         print("Starting: Static (Selective Averaging) method")
         tracker = RatTracker("Static Diff")
-        gray_first = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
-        gray_first = clahe.apply(gray_first)
-        gray_first = cv2.GaussianBlur(gray_first, (7, 7), 0)
-        
-        running_avg_bg = np.float32(gray_first)
-        rat_mask_for_bg_update = np.zeros_like(gray_first, dtype=np.uint8)
+
+        quiet_start_frame = find_quiet_window(
+            video_path, is_mpg,
+            reader if is_mpg else None,
+            cap if not is_mpg else None,
+            fps)
+
+        running_avg_bg = generate_median_background(
+            video_path, is_mpg, 
+            reader if is_mpg else None, 
+            cap if not is_mpg else None, 
+            quiet_start_frame, fps
+        )
+        if running_avg_bg is None:
+            gray_first = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
+            gray_first = clahe.apply(gray_first)
+            gray_first = cv2.GaussianBlur(gray_first, (7, 7), 0)
+            running_avg_bg = np.float32(gray_first)
+
+        rat_mask_for_bg_update = np.zeros_like(running_avg_bg, dtype=np.uint8)
+        if is_mpg:
+                try:
+                    reader.set_image_index(start_frame)
+                except:
+                    print("WARNING: Failed to set start frame for MPG. Starting from the beginning.")
+        else:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
     trajectory_data = []
     frame_counter = start_frame
