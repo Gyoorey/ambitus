@@ -11,7 +11,6 @@ def find_video_for_csv(csv_path):
     Attempts to automatically find the original video file based on the CSV filename 
     and the mirrored folder structure (results/ -> data/).
     """
-    # 1. Alapnév (videó neve) kinyerése a CSV-ből
     basename = os.path.basename(csv_path)
     name_without_ext = basename.replace('.csv', '')
     if name_without_ext.endswith('_trajectory_filtered'):
@@ -28,53 +27,49 @@ def find_video_for_csv(csv_path):
     extensions = ['.mp4', '.mpg', '.avi', '.mov']
     csv_dir = Path(csv_path).resolve().parent
     
-    # 2. STRUKTÚRA VISSZAFEJTÉSE (Tükrözés)
-    # A CSV tipikus útvonala: [PROJEKT_GYÖKÉR]/results/[ALMAPPÁK...]/[VIDEÓ_NEVE]/video_static_trajectory.csv
-    # A videó tipikus útvonala: [PROJEKT_GYÖKÉR]/data/[ALMAPPÁK...]/video.mp4
+    # 2. DECONSTRUCTING THE STRUCTURE (Mirroring)
+    # Typical path of the CSV file: [PROJECT_ROOT]/results/[SUBFOLDERS...]/[VIDEO_NAME]/video_static_trajectory.csv
+    # Typical video path: [PROJECT_ROOT]/data/[SUBFOLDERS...]/video.mp4
 
-    # Megkeressük a "results" mappát az útvonalban
+    # Locate the "results" folder in the path
     parts = list(csv_dir.parts)
     
     if "results" in parts:
         idx = parts.index("results")
         
-        # A projekt gyökere a "results" előtti rész
+        # The root of the project is the part before "results"
         project_root = Path(*parts[:idx])
         
-        # A belső útvonal (almappák) a "results" után, de levágva a legutolsó elemet (ami maga a videó neve)
-        # Pl. ha parts = (..., 'results', 'Kiserlet_1', 'Video_01')
-        # Akkor az almappa: ('Kiserlet_1',)
+        # The internal path (subfolders) following "results", but with the last element (which is the video's name) removed
+        # For example, if parts = (..., 'results', 'Experiment_1', 'Video_01')
+        # Then the subfolder is: ('Experiment_1',)
         sub_folders = parts[idx+1 : -1] 
         
-        # Összerakjuk a várható eredeti videó mappát:
-        # [PROJEKT_GYÖKÉR] / "data" / [ALMAPPÁK...]
+        # Let's set up the expected original video folder:
+        # [PROJECT_ROOT] / "data" / [SUBFOLDERS...]
         expected_video_dir = project_root / "data" / Path(*sub_folders)
         
         print(f"Expected original video directory: {expected_video_dir}")
         
-        # Megnézzük, létezik-e itt a videó a lehetséges kiterjesztésekkel
+        # Let's see if the video exists here with the possible file extensions
         if expected_video_dir.exists():
             for ext in extensions:
                 possible_path = expected_video_dir / (name_without_ext + ext)
                 if possible_path.exists():
                     return str(possible_path)
-                
-                # Ellenőrizzük nagybetűs kiterjesztéssel is (pl. .MPG)
+
                 possible_path_upper = expected_video_dir / (name_without_ext + ext.upper())
                 if possible_path_upper.exists():
                     return str(possible_path_upper)
 
-    # 3. FALLBACK (Tartalék megoldás)
-    # Ha valamiért nem a "results" mappastruktúrában vagyunk (pl. manuálisan másoltad ki a CSV-t)
+    # 3. FALLBACK 
     print("WARNING: Could not reconstruct path from 'results/'. Falling back to local directory search.")
     
-    # Közvetlen keresés a CSV mappájában
     for ext in extensions:
         possible_path = csv_dir / (name_without_ext + ext)
         if possible_path.exists():
             return str(possible_path)
 
-    # Keresés a CSV mappájának szülőjében
     for ext in extensions:
         possible_path = csv_dir.parent / (name_without_ext + ext)
         if possible_path.exists():
@@ -126,7 +121,6 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
     is_mpg = video_path.lower().endswith('.mpg')
     
     if is_mpg:
-        # PONTOSAN UGYANAZ AZ OLVASÓ, MINT A TRACKER.PY-BAN!
         input_params = []
         output_params = ['-vf', 'yadif,scale=768:576,setsar=1']
         reader = imageio.get_reader(video_path, 'ffmpeg', input_params=input_params, output_params=output_params)
