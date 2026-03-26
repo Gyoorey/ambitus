@@ -469,8 +469,8 @@ def track(video_path, config_file="arena_config_poly.json", method='simple', sho
         
         # Special morphological filtering against elongated shapes (walls)
         kernel = np.ones((3, 3), np.uint8)
-        kernel1 = np.ones((7, 1), np.uint8)
-        kernel2 = np.ones((1, 7), np.uint8)
+        kernel1 = np.ones((9, 1), np.uint8)
+        kernel2 = np.ones((1, 9), np.uint8)
         fgmask = cv2.morphologyEx(fgmask, cv2.MORPH_OPEN, kernel1, iterations=1)
         fgmask = cv2.morphologyEx(fgmask, cv2.MORPH_OPEN, kernel2, iterations=1)
         fgmask = cv2.morphologyEx(fgmask, cv2.MORPH_OPEN, kernel, iterations=1)
