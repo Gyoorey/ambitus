@@ -1,0 +1,50 @@
+General Locomotor Features (requested)
+Total_Distance ; pixels ; The cumulative path length traveled by the rat.
+Total_Activity_Time ; s ; Total duration spent moving (speed > threshold).
+Total_Inactivity_Time ; s ; Total duration spent standing still (speed <= threshold).
+Average_Speed ; px/s ; Total distance divided by total time.
+Average_Activity_Speed ; px/s ; Average speed calculated only during active moving phases.
+Total_Activity_Number ; count ; Total number of times the rat started moving.
+Total_Inactivity_Number ; count ; Total number of times the rat stopped.
+Mean_Activity_Phase_Duration ; s ; Average duration of a single continuous movement phase.
+Mean_Inactivity_Phase_Duration ; s ; Average duration of a single continuous resting phase.
+
+Phase-Specific Features (requested)
+Short_Inactivity_Number ; count ; Number of resting phases lasting 5 seconds or less.
+Short_Inactivity_Total_Time ; s ; Cumulative time spent in short resting phases.
+Short_Inactivity_Mean_Time ; s ; Average duration of short resting phases.
+Short_Activity_Number ; count ; Number of movement phases lasting 5 seconds or less.
+Short_Activity_Total_Time ; s ; Cumulative time spent in short movement phases.
+Short_Activity_Mean_Time ; s ; Average duration of short movement phases.
+Short_Activity_Total_Distance ; pixels ; Total distance covered during short movement phases.
+Short_Activity_Mean_Distance ; pixels ; Average distance covered per short movement phase.
+Short_Activity_Mean_Speed ; px/s ; Average speed during short movement phases.
+Long_Inactivity_Number ; count ; Number of resting phases lasting more than 5 seconds.
+Long_Inactivity_Total_Time ; s ; Cumulative time spent in long resting phases.
+Long_Inactivity_Mean_Time ; s ; Average duration of long resting phases.
+Long_Activity_Number ; count ; Number of movement phases lasting more than 5 seconds.
+Long_Activity_Total_Time ; s ; Cumulative time spent in long movement phases.
+Long_Activity_Mean_Time ; s ; Average duration of long movement phases.
+Long_Activity_Total_Distance ; pixels ; Total distance covered during long movement phases.
+Long_Activity_Mean_Distance ; pixels ; Average distance covered per long movement phase.
+Long_Activity_Mean_Speed ; px/s ; Average speed during long movement phases.
+
+Spatial and Geometric Feature Ideas:
+Corner_Time_Ratio ; % ; Percentage of time spent in the 4 corners of the arena vs straight corridors.
+Clockwise_Distance ; pixels ; Distance traveled moving in a clockwise direction.
+CounterClockwise_Distance ; pixels ; Distance traveled moving in a counter-clockwise direction.
+Directional_Asymmetry_Index ; ratio ; Absolute difference between CW and CCW distance divided by their sum (0=balanced, 1=unidirectional).
+U_Turn_Count ; count ; Number of times the rat reversed its running direction in the corridor.
+Spatial_Entropy ; bits ; Measure of how uniformly the rat explored the 4 corridors and 4 corners (higher=even exploration).
+
+Kinematic Feature Ideas:
+Meander_Tortuosity ; deg/px ; Sum of absolute change in movement direction divided by distance (high=zigzag walking).
+Acceleration_Variance ; px/s^2 ; Variance of acceleration, indicating jerky (high variance) vs smooth (low variance) locomotion.
+
+Pattern Analysis Ideas:
+Distance_Min_1 ; pixels ; Distance traveled during the 1st minute of the valid window.
+Distance_Min_2 ; pixels ; Distance traveled during the 2nd minute.
+Distance_Min_3 ; pixels ; Distance traveled during the 3rd minute.
+Distance_Min_4 ; pixels ; Distance traveled during the 4th minute.
+Distance_Min_5 ; pixels ; Distance traveled during the 5th minute.
+Intra_Session_Habituation_Index ; ratio ; (Distance_Min_1 - Distance_Min_5) / Total_Distance (Positive means habituation occurred).

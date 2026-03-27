@@ -8,6 +8,7 @@ from align_roi import align_video_roi
 from heatmap_gen import generate_heatmap
 from traj_filter import process_trajectory
 from playback_filtered import play_filtered_trajectory
+from feature_extractor import extract_features
 import os
 from pathlib import Path
 
@@ -314,3 +315,126 @@ def playback_cmd(csv_dir, video_dir, video_file, method, tail, speed):
     csv_first_part = Path(csv_dir).name
     csv_path = os.path.join(csv_dir, f"{csv_first_part}_{method}_trajectory_filtered.csv")
     play_filtered_trajectory(csv_path, tail_length_sec=tail, video_file=video_file, speed=speed)
+
+
+@cli.command(name="extract")
+@click.argument("csv_path", type=click.Path())
+@click.option("--config", default=None, type=click.Path(), help="Path to the aligned ROI config JSON file (Optional, auto-detected if not provided)")
+@click.option("--output", default=None, help="Output JSON filename (Optional)")
+@click.option("--debug", is_flag=True, help="Generate debug HTML dashboard") 
+def extract_cmd(csv_path, config, output, debug):
+    """
+    Extracts behavioral and spatial features from a filtered trajectory CSV.
+    Uses adaptive thresholds to classify active/inactive phases.
+    Saves the extracted features to a human-readable JSON file.
+    """
+    if not os.path.exists(csv_path):
+        click.echo(f"ERROR: CSV file not found: {csv_path}")
+        return
+
+    base_dir = os.path.dirname(csv_path)
+    filename = os.path.splitext(os.path.basename(csv_path))[0]
+
+    base_name = filename
+    if base_name.endswith('_trajectory_filtered'):
+        base_name = base_name.replace('_trajectory_filtered', '')
+    elif base_name.endswith('_filtered'):
+        base_name = base_name.replace('_filtered', '')
+    elif base_name.endswith('_trajectory'):
+        base_name = base_name.replace('_trajectory', '')
+        
+    methods = ['_simple', '_static', '_dof', '_kf', '_of', '_sub_dof_fusion', '_pure_of', '_mhi']
+    for method in methods:
+        if base_name.endswith(method):
+            base_name = base_name[:-len(method)]
+            break
+
+    if config is None:
+        config = os.path.join(base_dir, f"{base_name}_config.json")
+        
+        if not os.path.exists(config):
+            click.echo(f"ERROR: Auto-detected Config file not found: {config}")
+            click.echo("Please provide the config file manually using the --config option.")
+            return
+        else:
+            click.echo(f"Auto-detected config file: {config}")
+    else:
+        if not os.path.exists(config):
+            click.echo(f"ERROR: Provided Config file not found: {config}")
+            return
+
+    if output is None:
+        method_suffix = filename.replace(base_name, '').replace('_trajectory_filtered', '').replace('_trajectory', '')
+        output = os.path.join(base_dir, f"{base_name}{method_suffix}_features.json")
+
+    extract_features(csv_path, config_path=config, output_json_path=output, debug_html=debug)
+
+@cli.command(name="extract_dir")
+@click.argument("results_dir", type=click.Path())
+@click.option("--force", is_flag=True, help="Force overwrite existing feature JSON files")
+@click.option("--debug", is_flag=True, help="Generate debug HTML dashboards")
+def extract_dir_cmd(results_dir, force, debug):
+    """
+    Recursively finds all trajectory CSVs in the results directory and 
+    extracts features into JSON files next to them.
+    """
+    root_dir = Path(results_dir).resolve()
+    
+    if not root_dir.exists():
+        click.echo(f"ERROR: Results directory not found: {root_dir}")
+        return
+        
+    csv_files = list(root_dir.rglob('*_trajectory_filtered.csv'))
+    
+    if not csv_files:
+        csv_files = list(root_dir.rglob('*_trajectory.csv'))
+        
+    if not csv_files:
+        click.echo(f"No trajectory CSV files found in {root_dir} or its subdirectories.")
+        return
+        
+    click.echo(f"Found {len(csv_files)} CSV files for feature extraction.")
+    
+    success_count = 0
+
+    for csv_file in sorted(csv_files):
+        base_dir = csv_file.parent
+        filename = csv_file.stem
+        
+        base_name = filename
+        if base_name.endswith('_trajectory_filtered'):
+            base_name = base_name.replace('_trajectory_filtered', '')
+        elif base_name.endswith('_filtered'):
+            base_name = base_name.replace('_filtered', '')
+        elif base_name.endswith('_trajectory'):
+            base_name = base_name.replace('_trajectory', '')
+            
+        methods = ['_simple', '_static', '_dof', '_kf', '_of', '_sub_dof_fusion', '_pure_of', '_mhi']
+        method_suffix = ""
+        for method in methods:
+            if base_name.endswith(method):
+                method_suffix = method
+                base_name = base_name[:-len(method)]
+                break
+
+        config_path = base_dir / f"{base_name}_config.json"
+        output_json = base_dir / f"{base_name}{method_suffix}_features.json"
+
+        if output_json.exists() and not force:
+            click.echo(f"Skipping {csv_file.name} (Features already extracted. Use --force to overwrite).")
+            continue
+
+        if not config_path.exists():
+            click.echo(f"WARNING: Skipping {csv_file.name} (Missing config file: {config_path.name})")
+            continue
+            
+        click.echo(f"\nExtracting features for: {csv_file.name}")
+        
+        try:
+            extract_features(str(csv_file), config_path=str(config_path), output_json_path=str(output_json), debug_html=debug)
+            success_count += 1
+        except Exception as e:
+            click.echo(f"ERROR during extraction of {csv_file.name}: {e}")
+            
+    click.echo(f"\n========================================")
+    click.echo(f"Extraction complete! Successfully processed {success_count}/{len(csv_files)} files.")
