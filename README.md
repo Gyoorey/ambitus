@@ -68,6 +68,10 @@ Run a playback on a filtered results. Automatically selects the csv for the give
 
 `ambitus playback results/<video_dir> --method <method>`
 
+Extract features from the filtered trajectories from a directory (with subfolders), to force overwrite already extracted features use --force, also with --debug a plotly html is saved with details about some features.
+
+`ambitus extract_dir <dir> --force --debug`
+
 Available legacy methods: dense optical flow with Farneback (dof), simple+Kalman-Filter (kf), simple+Optical-flow (of), pure opcital flow  (pure_of), Motion History Image (mhi)
 
 `ambitus analyze-exp data/45.mp4 --show --skip-seconds 0.0 --debug --method dof`
