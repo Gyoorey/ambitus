@@ -58,7 +58,7 @@ def load_video(video_path, show):
 @click.option("--debug", is_flag=True, help="Show debug view")
 @click.option("--skip-seconds", default=0.0, help="Seconds to skip at the start")
 @click.option("--min-area", default=100, help="Minimum area")
-@click.option("--method", type=click.Choice(['simple', 'static'], case_sensitive=False), default='simple', help="Tracking method: simple (MOG2) or static (Masked Running Average).")
+@click.option("--method", type=click.Choice(['simple', 'static'], case_sensitive=False), default='static', help="Tracking method: simple (MOG2) or static (Masked Running Average).")
 def analyze(path, config, show, debug, skip_seconds, min_area, method):
     """ Process video using the optimized, clean tracking methods. """
     track(
