@@ -9,6 +9,7 @@ from heatmap_gen import generate_heatmap
 from traj_filter import process_trajectory
 from playback_filtered import play_filtered_trajectory
 from feature_extractor import extract_features
+from threshold_calibrator import calibrate_global_thresholds
 import os
 from pathlib import Path
 
@@ -316,13 +317,22 @@ def playback_cmd(csv_dir, video_dir, video_file, method, tail, speed):
     csv_path = os.path.join(csv_dir, f"{csv_first_part}_{method}_trajectory_filtered.csv")
     play_filtered_trajectory(csv_path, tail_length_sec=tail, video_file=video_file, speed=speed)
 
+@cli.command(name="calibrate")
+@click.argument("results_dir", type=click.Path())
+@click.option("--output", default="global_thresholds.json", help="The name of the output JSON file that will store the global thresholds (default: global_thresholds.json)")
+def calibrate_cmd(results_dir, output):
+    """
+    Calculates population-level global speed thresholds for Active/Inactive classification.
+    """
+    calibrate_global_thresholds(results_dir, output)
 
 @cli.command(name="extract")
 @click.argument("csv_path", type=click.Path())
 @click.option("--config", default=None, type=click.Path(), help="Path to the aligned ROI config JSON file (Optional, auto-detected if not provided)")
 @click.option("--output", default=None, help="Output JSON filename (Optional)")
-@click.option("--debug", is_flag=True, help="Generate debug HTML dashboard") 
-def extract_cmd(csv_path, config, output, debug):
+@click.option("--debug", is_flag=True, help="Generate debug HTML dashboard")
+@click.option("--global-thresholds", default=None, type=click.Path(), help="Path to global thresholds JSON file (Optional)") 
+def extract_cmd(csv_path, config, output, debug, global_thresholds):
     """
     Extracts behavioral and spatial features from a filtered trajectory CSV.
     Uses adaptive thresholds to classify active/inactive phases.
@@ -367,7 +377,12 @@ def extract_cmd(csv_path, config, output, debug):
         method_suffix = filename.replace(base_name, '').replace('_trajectory_filtered', '').replace('_trajectory', '')
         output = os.path.join(base_dir, f"{base_name}{method_suffix}_features.json")
 
-    extract_features(csv_path, config_path=config, output_json_path=output, debug_html=debug)
+    # ensure global thresholds path is valid if provided
+    if global_thresholds is not None and not os.path.exists(global_thresholds):
+        click.echo(f"ERROR: Global thresholds file not found: {global_thresholds}")
+        return
+
+    extract_features(csv_path, config_path=config, output_json_path=output, debug_html=debug, global_thresholds_path=global_thresholds)
 
 @cli.command(name="extract_dir")
 @click.argument("results_dir", type=click.Path())
@@ -377,6 +392,7 @@ def extract_dir_cmd(results_dir, force, debug):
     """
     Recursively finds all trajectory CSVs in the results directory and 
     extracts features into JSON files next to them.
+    Automatically detects the corresponding config files and applies global thresholds if available.
     """
     root_dir = Path(results_dir).resolve()
     
@@ -395,6 +411,14 @@ def extract_dir_cmd(results_dir, force, debug):
         
     click.echo(f"Found {len(csv_files)} CSV files for feature extraction.")
     
+    global_thresh_file = root_dir / "global_thresholds.json"
+    global_path = str(global_thresh_file) if global_thresh_file.exists() else None
+    
+    if global_path:
+        click.echo(f"Found global thresholds: {global_path}")
+    else:
+        click.echo("No global thresholds found. Using local per-video calibration.")
+
     success_count = 0
 
     for csv_file in sorted(csv_files):
@@ -431,7 +455,7 @@ def extract_dir_cmd(results_dir, force, debug):
         click.echo(f"\nExtracting features for: {csv_file.name}")
         
         try:
-            extract_features(str(csv_file), config_path=str(config_path), output_json_path=str(output_json), debug_html=debug)
+            extract_features(str(csv_file), config_path=str(config_path), output_json_path=str(output_json), debug_html=debug, global_thresholds_path=global_path)
             success_count += 1
         except Exception as e:
             click.echo(f"ERROR during extraction of {csv_file.name}: {e}")

@@ -152,7 +152,7 @@ def generate_feature_dashboard(times, speeds, states, t_lower, t_upper,
 # ==============================================================================
 # FEATURE EXTRACTION ENGINE
 # ==============================================================================
-def extract_features(csv_path, config_path, output_json_path, debug_html=False):
+def extract_features(csv_path, config_path, output_json_path, debug_html=False, global_thresholds_path=None):
     if not os.path.exists(csv_path) or not os.path.exists(config_path):
         print(f"ERROR: Missing input files for extraction.")
         return
@@ -195,12 +195,22 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False):
     total_distance = np.sum(distances)
 
     # --- 4. ADAPTIVE THRESHOLDS ---
-    moving_speeds = speeds[speeds > 0.1]
-    if len(moving_speeds) > 10:
-        t_lower = np.percentile(moving_speeds, 15)
-        t_upper = np.percentile(moving_speeds, 40)
+    t_lower, t_upper = 2.0, 5.0 # Fallback default
+    used_threshold_type = "Local (Per-Video)"
+
+    if global_thresholds_path and os.path.exists(global_thresholds_path):
+        with open(global_thresholds_path, 'r') as f:
+            glob_data = json.load(f)
+            if "T_lower_px_s" in glob_data and "T_upper_px_s" in glob_data:
+                t_lower = glob_data["T_lower_px_s"]
+                t_upper = glob_data["T_upper_px_s"]
+                used_threshold_type = "Global (Population)"
     else:
-        t_lower, t_upper = 2.0, 5.0 
+        # If no global file provided, calculate locally based on this specific video
+        moving_speeds = speeds[speeds > 0.1]
+        if len(moving_speeds) > 10:
+            t_lower = np.percentile(moving_speeds, 15)
+            t_upper = np.percentile(moving_speeds, 40)
 
     # --- 5. HYSTERESIS & DEBOUNCING ---
     states = np.zeros(len(speeds), dtype=int)
@@ -321,6 +331,7 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False):
         "Metadata": {
             "Analyzed_File": os.path.basename(csv_path),
             "Total_Time_Evaluated_s": round(float(total_time), 2),
+            "Threshold_Type": used_threshold_type,
             "Adaptive_Threshold_Lower_px_s": round(float(t_lower), 2),
             "Adaptive_Threshold_Upper_px_s": round(float(t_upper), 2)
         },
@@ -428,7 +439,7 @@ def cli(csv_path, config, output, debug):
         method_suffix = filename.replace(base_name, '').replace('_trajectory_filtered', '').replace('_trajectory', '')
         output = os.path.join(base_dir, f"{base_name}{method_suffix}_features.json")
 
-    extract_features(csv_path, config_path=config, output_json_path=output, debug_html=debug)
+    extract_features(csv_path, config_path=config, output_json_path=output, debug_html=debug, global_thresholds_path=None)
 
 if __name__ == '__main__':
     cli()
