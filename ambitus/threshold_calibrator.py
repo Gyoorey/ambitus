@@ -7,9 +7,9 @@ import click
 
 def calibrate_global_thresholds(results_dir, output_json="global_thresholds.json"):
     """
-    Végigmegy a megadott könyvtár (results_dir) összes *_filtered.csv fájlján.
-    Kiszámolja az összesített populációs sebesség-eloszlást, és meghatározza a
-    globális T_lower és T_upper küszöböket. Elmenti az eredményt egy JSON-ba.
+    Iterates through all *_filtered.csv files in the specified directory (results_dir).
+    Calculates the aggregated population speed distribution and determines the
+    global T_lower and T_upper thresholds. Saves the result to a JSON file.
     """
     root_dir = Path(results_dir).resolve()
     
@@ -19,7 +19,7 @@ def calibrate_global_thresholds(results_dir, output_json="global_thresholds.json
 
     csv_files = list(root_dir.rglob('*_trajectory_filtered.csv'))
     if not csv_files:
-        # Fallback, ha nincs szűrt, próbáljuk a sima trajectory-t
+        # Fallback, if no filtered files found, try plain trajectory files
         csv_files = list(root_dir.rglob('*_trajectory.csv'))
         
     if not csv_files:
@@ -48,7 +48,7 @@ def calibrate_global_thresholds(results_dir, output_json="global_thresholds.json
             
         times, xs, ys = np.array(times), np.array(xs), np.array(ys)
         
-        # Pillanatnyi sebességek számítása (dt, dx, dy)
+        # Calculate instantaneous speeds (dt, dx, dy)
         dt = np.diff(times)
         dt[dt == 0] = 0.001
         dx = np.diff(xs)
@@ -57,7 +57,7 @@ def calibrate_global_thresholds(results_dir, output_json="global_thresholds.json
         distances = np.sqrt(dx**2 + dy**2)
         speeds = distances / dt
         
-        # Csak a valódi mozgásokat gyűjtjük (kiszűrjük a zajt/0-t)
+        # Only collect real movements (filter out noise/zeros)
         moving_speeds = speeds[speeds > 0.1]
         all_speeds.extend(moving_speeds.tolist())
         
@@ -65,7 +65,7 @@ def calibrate_global_thresholds(results_dir, output_json="global_thresholds.json
         print("ERROR: No movement detected in any of the files.")
         return False
         
-    # --- GLOBÁLIS KÜSZÖBÖK SZÁMÍTÁSA ---
+    # --- CALCULATE GLOBAL THRESHOLDS ---
     all_speeds = np.array(all_speeds)
     
     t_lower = np.percentile(all_speeds, 15)
@@ -93,7 +93,7 @@ def calibrate_global_thresholds(results_dir, output_json="global_thresholds.json
 
 @click.command()
 @click.argument("results_dir", type=click.Path())
-@click.option("--output", default="global_thresholds.json", help="Kimeneti JSON neve")
+@click.option("--output", default="global_thresholds.json", help="Output JSON filename")
 def cli(results_dir, output):
     """
     Calculates population-level global speed thresholds for Active/Inactive phase classification.
