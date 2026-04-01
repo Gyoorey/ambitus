@@ -308,14 +308,15 @@ def run_dir_pipeline(video_dir, base_image, base_config, method, min_area, skip_
 @click.option("--method", type=click.Choice(['simple', 'static'], case_sensitive=False), default='static', help="Tracking method")
 @click.option("--tail", default=3.0, help="Length of the visible trajectory tail in seconds (default: 3.0)")
 @click.option("--speed", default=1.0, help="Playback speed multiplier (e.g., 2.0 for double speed)")
-def playback_cmd(csv_dir, video_dir, video_file, method, tail, speed):
+@click.option("--save", is_flag=True, help="Save the playback with overlaid trajectory as a new video file")
+def playback_cmd(csv_dir, video_dir, video_file, method, tail, speed, save):
     """
     Plays the original video and dynamically overlays the filtered trajectory 
     with a fading tail to visualize the rat's movement.
     """
     csv_first_part = Path(csv_dir).name
     csv_path = os.path.join(csv_dir, f"{csv_first_part}_{method}_trajectory_filtered.csv")
-    play_filtered_trajectory(csv_path, tail_length_sec=tail, video_file=video_file, speed=speed)
+    play_filtered_trajectory(csv_path, tail_length_sec=tail, video_file=video_file, speed=speed, save_video=save)
 
 @cli.command(name="calibrate")
 @click.argument("results_dir", type=click.Path())

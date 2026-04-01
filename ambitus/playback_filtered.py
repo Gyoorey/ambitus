@@ -77,7 +77,7 @@ def find_video_for_csv(csv_path):
 
     return None
 
-def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", video_file=None, speed=1.0):
+def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", video_file=None, speed=1.0, save_video=False):
     """
     Plays the original video and overlays the filtered trajectory with a fading tail.
     Uses sequential reading to avoid MPG seeking bugs.
@@ -135,6 +135,34 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
     tail_frames = int(tail_length_sec * fps)
     
     print(f"Video detected with {fps} FPS. Starting sequential playback...")
+
+    # --- 2.5 INITIALIZE VIDEO WRITER (If saving is requested) ---
+    out_video = None
+    if save_video:
+        # Get frame dimensions by reading the first frame, then reset to 0
+        if is_mpg:
+            try:
+                reader.set_image_index(0)
+                temp_frame = reader.get_next_data()
+                h, w = temp_frame.shape[:2]
+                reader.set_image_index(0) # Reset
+            except:
+                print("ERROR: Failed to initialize MPG for saving.")
+                return
+        else:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ret_t, temp_frame = cap.read()
+            h, w = temp_frame.shape[:2]
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # Reset
+            
+        base_dir = os.path.dirname(csv_path)
+        filename_base = os.path.splitext(os.path.basename(csv_path))[0].replace('_trajectory_filtered', '')
+        out_path = os.path.join(base_dir, f"{filename_base}_playback.mp4")
+        
+        # 'mp4v' is widely supported in OpenCV for MP4 containers
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
+        out_video = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+        print(f"Recording output video to: {out_path}")
     
     frame_idx = 0 
     paused = False
@@ -197,6 +225,9 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
                 cv2.putText(frame, "PAUSED", (w//2 - 50, h//2), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
 
         cv2.imshow("Filtered Trajectory Playback", frame)
+
+        if out_video is not None:
+            out_video.write(frame)
         
         # --- DYNAMIC KEYBOARD CONTROLS ---
         base_wait = int(1000 / fps) if fps > 0 else 40
@@ -221,6 +252,10 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
         reader.close()
     else:
         cap.release()
+
+    if out_video is not None:
+        out_video.release()
+        print(f"\nPlayback video successfully saved to disk!")
         
     cv2.destroyAllWindows()
 
@@ -230,12 +265,13 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
 @click.option("--video-file", default=None, help="Direct path to the video file (bypasses directory search)")
 @click.option("--tail", default=3.0, help="Length of the visible trajectory tail in seconds (default: 3.0)")
 @click.option("--speed", default=1.0, help="Playback speed multiplier (e.g., 2.0 for double speed)")
-def cli(csv_path, video_dir, video_file, tail, speed):
+@click.option("--save", is_flag=True, help="Save the playback with overlaid trajectory as a new video file") 
+def cli(csv_path, video_dir, video_file, tail, speed, save):
     """
     Plays the original video and dynamically overlays the filtered trajectory 
     with a fading tail to visualize the rat's movement over time.
     """
-    play_filtered_trajectory(csv_path, tail_length_sec=tail, video_file=video_file, speed=speed)
+    play_filtered_trajectory(csv_path, tail_length_sec=tail, video_file=video_file, speed=speed, save_video=save)
 
 if __name__ == '__main__':
     cli()
