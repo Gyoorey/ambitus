@@ -181,9 +181,7 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     total_time = times[-1] - times[0]
 
     # --- 3. KINEMATICS ---
-    dt = np.diff(times)
-    dt[dt == 0] = 0.001
-    
+    dt = np.diff(times)  
     dx = np.diff(xs)
     dy = np.diff(ys)
     distances = np.sqrt(dx**2 + dy**2)
@@ -198,6 +196,9 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     t_lower, t_upper = 2.0, 5.0 # Fallback default
     used_threshold_type = "Local (Per-Video)"
 
+    avg_dt = total_time / len(times) if len(times) > 0 else 0.04
+    noise_floor_speed = 1.0 / avg_dt if avg_dt > 0 else 25.0
+
     if global_thresholds_path and os.path.exists(global_thresholds_path):
         with open(global_thresholds_path, 'r') as f:
             glob_data = json.load(f)
@@ -207,10 +208,16 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
                 used_threshold_type = "Global (Population)"
     else:
         # If no global file provided, calculate locally based on this specific video
-        moving_speeds = speeds[speeds > 0.1]
+        moving_speeds = speeds[speeds > noise_floor_speed]
         if len(moving_speeds) > 10:
             t_lower = np.percentile(moving_speeds, 15)
             t_upper = np.percentile(moving_speeds, 40)
+
+    # Ensure thresholds are reasonable (not below noise floor, and upper > lower)
+    if t_lower < noise_floor_speed:
+        t_lower = noise_floor_speed
+    if t_upper <= t_lower:
+        t_upper = t_lower * 1.5
 
     # --- 5. HYSTERESIS & DEBOUNCING ---
     states = np.zeros(len(speeds), dtype=int)
