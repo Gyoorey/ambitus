@@ -378,6 +378,7 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
             }
         },
         "III_Spatial_and_Geometric": {
+            "Corner_Time_s": round(float(corner_time), 2),
             "Corner_Time_Ratio_pct": round(float(corner_ratio), 2),
             "Clockwise_Distance_px": round(float(cw_dist), 2),
             "CounterClockwise_Distance_px": round(float(ccw_dist), 2),
