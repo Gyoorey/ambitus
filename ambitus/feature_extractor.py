@@ -26,8 +26,8 @@ def normalize_angle_diff(diff):
     while diff > 180: diff -= 360
     return diff
 
-def get_sector(x, y, cx, cy):
-    angle = np.degrees(np.arctan2(y - cy, x - cx))
+def get_sector(x, y, cx, cy, phi=0):
+    angle = np.degrees(np.arctan2(y - cy, x - cx)) + phi
     if angle < 0: angle += 360  
     shifted = (angle + 22.5) % 360
     sector_id = int(shifted // 45)
@@ -161,6 +161,7 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     with open(config_path, 'r') as f:
         config_data = json.load(f)
     inner_poly = np.array(config_data["inner_poly"], dtype=np.int32)
+    outer_poly = np.array(config_data["outer_poly"], dtype=np.int32)
     arena_center = get_polygon_centroid(inner_poly)
 
     # --- 2. LOAD DATA ---
@@ -220,33 +221,41 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
         t_upper = t_lower * 1.5
 
     # --- 5. HYSTERESIS & DEBOUNCING ---
+    # states for one second windows
+    fps = int(1.0 / avg_dt) if avg_dt > 0 else 25
+    one_second_states = np.ones(len(speeds)//fps, dtype=int)*-1
+
+    # Temporal Smoothing: Aggregate for one second long sliding windows
+    for i in range(len(one_second_states)):
+        start = i * fps
+        end = min((i + 1) * fps, len(speeds))
+        window_speeds = speeds[start:end]
+        
+        if len(window_speeds) == 0:
+            one_second_states[i] = 0
+            continue
+        
+        # majority vote logic
+        high_active_count = np.sum(window_speeds > t_upper)
+        low_active_count = np.sum((window_speeds <= t_upper) & (window_speeds >= t_lower))
+        inactive_count = np.sum(window_speeds < t_lower)
+        # three state logic: high active, low active, inactive. Majority vote with tie-breaking towards inactivity
+        if high_active_count > low_active_count and high_active_count > inactive_count:
+            one_second_states[i] = 2  # High Active
+        elif low_active_count > high_active_count and low_active_count > inactive_count:
+            one_second_states[i] = 1  # Low Active
+        elif high_active_count + low_active_count > inactive_count:
+            one_second_states[i] = 1  # Mixed but more active than inactive, classify as Low Active
+        else:
+            one_second_states[i] = 0  # Inactive
+
+            
+    # convert to frame-level states (for plotting & phase grouping)
     states = np.zeros(len(speeds), dtype=int)
-    current_state = 0
-    for i, v in enumerate(speeds):
-        if v > t_upper: current_state = 1
-        elif v < t_lower: current_state = 0
-        states[i] = current_state
-
-    # Temporal Smoothing (Debounce)
-    fps = 1.0 / np.median(dt) if len(dt) > 0 else 25.0
-    min_gap_frames = int(1.0 * fps) 
-    min_spike_frames = int(0.5 * fps) 
-    
-    # Fill short gaps (0s inside 1s)
-    start_idx = 0
-    for key, group in groupby(states):
-        length = sum(1 for _ in group)
-        if key == 0 and length <= min_gap_frames:
-            states[start_idx : start_idx + length] = 1
-        start_idx += length
-
-    # Remove short spikes (1s inside 0s)
-    start_idx = 0
-    for key, group in groupby(states):
-        length = sum(1 for _ in group)
-        if key == 1 and length <= min_spike_frames:
-            states[start_idx : start_idx + length] = 0
-        start_idx += length
+    for i in range(len(one_second_states)):
+        start = i * fps
+        end = min((i + 1) * fps, len(speeds))
+        states[start:end] = one_second_states[i]
 
     # --- Group Phases ---
     active_phases, inactive_phases = [], []
@@ -256,7 +265,7 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
         end_idx = min(start_idx + length, len(times) - 1)
         phase_duration = times[end_idx] - times[start_idx]
         
-        if key == 1:
+        if key == 1 or key == 2:  # Active (both low and high)
             phase_dist = np.sum(distances[start_idx:end_idx])
             active_phases.append({'duration': phase_duration, 'distance': phase_dist})
         else:
@@ -283,7 +292,11 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     cw_dist, ccw_dist = 0.0, 0.0
     u_turns = 0
     
-    angles_to_center = [calculate_angle(arena_center, (x, y)) for x, y in zip(xs, ys)]
+    upper_right_corner = outer_poly[3]
+
+    phi = calculate_angle(arena_center, upper_right_corner) - 45
+
+    angles_to_center = [calculate_angle(arena_center, (x, y) + phi) for x, y in zip(xs, ys)]
     sector_counts = np.zeros(8, dtype=int)
     current_direction = 0 
     
@@ -332,6 +345,15 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     habituation_index = 0.0
     if len(minute_distances) >= 5 and total_distance > 0:
         habituation_index = (minute_distances[0] - minute_distances[4]) / total_distance
+
+    # save the states and the angles for the debug csv
+    debug_csv_path = output_json_path.replace('.json', '_debug.csv')
+    with open(debug_csv_path, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['Time', 'X', 'Y', 'Speed', 'State', 'Angle_to_Center'])
+        for i in range(len(times)-1):
+            writer.writerow([times[i], xs[i], ys[i], speeds[i], states[i], angles_to_center[i]])
+    print(f"Debug CSV with states and directions saved to: {debug_csv_path}")
 
     # --- 9. JSON COMPILATION ---
     features = {

@@ -80,23 +80,58 @@ def find_video_for_csv(csv_path):
 def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", video_file=None, speed=1.0, save_video=False):
     """
     Plays the original video and overlays the filtered trajectory with a fading tail.
-    Uses sequential reading to avoid MPG seeking bugs.
+    Now visually represents the Behavioral State (Active=Green, Inactive=Red) 
+    and draws the Angle-to-Center vector based on the features_debug.csv file.
     """
     if not os.path.exists(csv_path):
-        print(f"ERROR: CSV file not found: {csv_path}")
+        print(f"ERROR: Trajectory CSV file not found: {csv_path}")
         return
 
-    # --- 1. LOAD TRAJECTORY DATA ---
+    # --- 1. KERESSÜK MEG A HOZZÁ TARTOZÓ DEBUG CSV-T (Állapotok és Szögek) ---
+    base_dir = os.path.dirname(csv_path)
+    filename_base = os.path.splitext(os.path.basename(csv_path))[0].replace('_trajectory_filtered', '').replace('_trajectory', '')
+    
+    # A feature_extractor.py által generált debug fájl neve
+    debug_csv_path = os.path.join(base_dir, f"{filename_base}_features_debug.csv")
+    
+    has_debug_data = False
+    states_dict = {}  # Time -> State (0/1)
+    angles_dict = {}  # Time -> Angle
+    
+    if os.path.exists(debug_csv_path):
+        print(f"Found Feature Debug data: {debug_csv_path}")
+        has_debug_data = True
+        with open(debug_csv_path, 'r') as f:
+            reader = csv.reader(f, delimiter=',') # FIGYELEM: Ha a mentés ","-vel történt! (Átírható ';'-re, ha kell)
+            next(reader, None) # Fejléc átugrása
+            for row in reader:
+                try:
+                    t = round(float(row[0]), 3) # Kulcs kerekítése a lebegőpontos hibák elkerülésére
+                    state = int(row[4])
+                    angle = float(row[5])
+                    states_dict[t] = state
+                    angles_dict[t] = angle
+                except (ValueError, IndexError):
+                    continue
+    else:
+        print(f"WARNING: Feature Debug CSV not found at {debug_csv_path}. States and angles will not be visualized.")
+
+    # --- 2. LOAD TRAJECTORY DATA (A szűrt útvonal) ---
     trajectory = []
     with open(csv_path, 'r') as f:
         reader_csv = csv.reader(f, delimiter=';')
-        next(reader_csv, None) # Skip header
+        next(reader_csv, None)
         for row in reader_csv:
             try:
-                t = float(row[0])
+                t = round(float(row[0]), 3)
                 x = int(row[1])
                 y = int(row[2])
-                trajectory.append((t, x, y))
+                
+                # Megnézzük, van-e az adott időponthoz állapotunk a debug dict-ből
+                state = states_dict.get(t, -1) if has_debug_data else -1
+                angle = angles_dict.get(t, 0.0) if has_debug_data else 0.0
+                
+                trajectory.append((t, x, y, state, angle))
             except (ValueError, IndexError):
                 continue
 
@@ -104,19 +139,22 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
         print("ERROR: No valid data found in CSV.")
         return
 
+    print(f"Loaded {len(trajectory)} trajectory points. CSV starts at T={trajectory[0][0]:.2f}s")
+
     times = np.array([pt[0] for pt in trajectory])
     xs = np.array([pt[1] for pt in trajectory])
     ys = np.array([pt[2] for pt in trajectory])
+    states = np.array([pt[3] for pt in trajectory])
+    angles = np.array([pt[4] for pt in trajectory])
 
-    print(f"Loaded {len(trajectory)} points. CSV starts at T={times[0]:.2f}s")
+    start_time_sec = times[0]
 
-    # --- 2. FIND AND OPEN THE VIDEO ---
+    # --- 3. FIND AND OPEN THE VIDEO ---
     if video_file is not None and os.path.exists(video_file):
         video_path = video_file
     else:
         video_path = find_video_for_csv(csv_path)
-        if video_path is None:
-            return
+        if video_path is None: return
 
     is_mpg = video_path.lower().endswith('.mpg')
     
@@ -131,21 +169,15 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
         if not cap.isOpened(): return
         fps = cap.get(cv2.CAP_PROP_FPS)
 
-    wait_time = int((1000 / fps) / speed) if fps > 0 else 40
-    tail_frames = int(tail_length_sec * fps)
-    
-    print(f"Video detected with {fps} FPS. Starting sequential playback...")
-
-    # --- 2.5 INITIALIZE VIDEO WRITER (If saving is requested) ---
+    # --- 4. VIDEO WRITER INITIALIZATION ---
     out_video = None
     if save_video:
-        # Get frame dimensions by reading the first frame, then reset to 0
         if is_mpg:
             try:
                 reader.set_image_index(0)
                 temp_frame = reader.get_next_data()
                 h, w = temp_frame.shape[:2]
-                reader.set_image_index(0) # Reset
+                reader.set_image_index(0)
             except:
                 print("ERROR: Failed to initialize MPG for saving.")
                 return
@@ -153,24 +185,24 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             ret_t, temp_frame = cap.read()
             h, w = temp_frame.shape[:2]
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # Reset
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             
-        base_dir = os.path.dirname(csv_path)
-        filename_base = os.path.splitext(os.path.basename(csv_path))[0].replace('_trajectory_filtered', '')
         out_path = os.path.join(base_dir, f"{filename_base}_playback.mp4")
-        
-        # 'mp4v' is widely supported in OpenCV for MP4 containers
         fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
         out_video = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
         print(f"Recording output video to: {out_path}")
+
+    tail_frames = int(tail_length_sec * fps)
+    print(f"Video detected with {fps} FPS. Starting sequential playback...")
+    print("Press 'q' or 'ESC' to stop. Press 'space' to pause/resume.")
     
     frame_idx = 0 
     paused = False
 
     while True:
         if not paused:
+            # --- 5. SEQUENTIAL READ & FRAME DROPPING (Fast Forward) ---
             frames_to_read = int(max(1, speed))
-            
             for _ in range(frames_to_read):
                 if is_mpg:
                     try:
@@ -185,51 +217,86 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
 
                 frame_idx += 1
                 if not ret: break
-
+                
             if not ret:
                 print("End of video reached.")
                 break
-            
-            if is_mpg:
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
+            if is_mpg: frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+            # --- 6. SYNCHRONIZATION AND DRAWING ---
             if current_time >= times[0] and current_time <= times[-1] + 1.0:
-                
                 current_csv_idx = np.argmin(np.abs(times - current_time))
-                start_tail_idx = max(0, current_csv_idx - tail_frames)
                 
+                # A. Draw the Fading Tail (Üstökös csóva)
+                start_tail_idx = max(0, current_csv_idx - tail_frames)
                 for i in range(start_tail_idx, current_csv_idx):
                     p1 = (xs[i], ys[i])
                     p2 = (xs[i+1], ys[i+1])
-                    
                     age_ratio = (i - start_tail_idx) / float(current_csv_idx - start_tail_idx + 1)
                     b, g, r = 255, int(255 * age_ratio), 0
                     thickness = int(1 + 2 * age_ratio)
-                    
                     cv2.line(frame, p1, p2, (b, g, r), thickness)
 
-                current_x = xs[current_csv_idx]
-                current_y = ys[current_csv_idx]
+                # Current Position Variables
+                cx = xs[current_csv_idx]
+                cy = ys[current_csv_idx]
+                c_state = states[current_csv_idx]
+                c_angle = angles[current_csv_idx]
                 
-                cv2.circle(frame, (current_x, current_y), 4, (0, 255, 255), -1)
-                cv2.drawMarker(frame, (current_x, current_y), (0, 0, 255), cv2.MARKER_CROSS, 15, 2)
-            
-            elif current_time < times[0]:
-                cv2.putText(frame, f"Waiting for rat insertion... (T={current_time:.2f}s)", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                if c_state == 2:
+                    cross_color = (0, 255, 0)  # BGR Green
+                    state_text = "HIGH ACTIVE"
+                elif c_state == 1:
+                    cross_color = (255, 0, 0)  # BGR Red (Low Active)
+                    state_text = "LOW ACTIVE"
+                elif c_state == 0:
+                    cross_color = (0, 0, 255)  # BGR Red (Inactive)
+                    state_text = "INACTIVE"
+                else:
+                    cross_color = (0, 0, 0)    # BGR Black (Fallback)
+                    state_text = "UNKNOWN"
 
+                # Draw the Crosshair
+                cv2.circle(frame, (cx, cy), 4, cross_color, -1)
+                cv2.drawMarker(frame, (cx, cy), cross_color, cv2.MARKER_CROSS, 15, 2)
+                
+                # Draw the Status Text next to the rat
+                cv2.putText(frame, state_text, (cx + 15, cy - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, cross_color, 2)
+
+                # C. IRÁNY-VEKTOR (Angle-to-Center)
+                if has_debug_data:
+                    # Számoljuk ki a vektor végpontját a megadott szög (fok) alapján
+                    # Mivel az Y tengely lefelé nő az OpenCV-ben, sin-nél negatív előjelet használhatunk
+                    # de az np.arctan2 (amit használtál) már elvégezte ezt a logikát.
+                    # Húzunk egy 40 pixeles "mutatót" az aktuális szögre.
+                    vec_len = 40
+                    angle_rad = np.radians(c_angle)
+                    
+                    # Az OpenCV koordináta rendszere szerint (jobbra +, lefelé +)
+                    end_x = int(cx + vec_len * np.cos(angle_rad))
+                    end_y = int(cy + vec_len * np.sin(angle_rad))
+                    
+                    cv2.arrowedLine(frame, (cx, cy), (end_x, end_y), (255, 255, 0), 2, tipLength=0.3)
+
+            elif current_time < times[0]:
+                cv2.putText(frame, f"Waiting for rat insertion... (T={current_time:.2f}s)", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+            # On-Screen Information
             cv2.putText(frame, f"Time: {current_time:.2f}s", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            
             speed_text = f"Speed: {speed}x" if speed != 1.0 else "Speed: 1x"
             cv2.putText(frame, speed_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            if paused:
-                cv2.putText(frame, "PAUSED", (w//2 - 50, h//2), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+
+        if paused:
+            h, w = frame.shape[:2]
+            cv2.putText(frame, "PAUSED", (w//2 - 50, h//2), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
 
         cv2.imshow("Filtered Trajectory Playback", frame)
-
         if out_video is not None:
             out_video.write(frame)
         
-        # --- DYNAMIC KEYBOARD CONTROLS ---
+        # --- 7. KEYBOARD CONTROLS ---
         base_wait = int(1000 / fps) if fps > 0 else 40
         current_wait = int(base_wait / speed) if speed < 1.0 else base_wait
         
@@ -248,11 +315,9 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
         elif key == ord('1'): 
             speed = 1.0
 
-    if is_mpg:
-        reader.close()
-    else:
-        cap.release()
-
+    if is_mpg: reader.close()
+    else: cap.release()
+        
     if out_video is not None:
         out_video.release()
         print(f"\nPlayback video successfully saved to disk!")
