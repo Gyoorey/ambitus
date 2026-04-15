@@ -332,8 +332,8 @@ def calibrate_cmd(results_dir, output):
 @click.argument("csv_path", type=click.Path())
 @click.option("--output", default=None, help="Output CSV filename (optional)")
 @click.option("--box-size", default=120, help="Size of the box around the current position to calculate SAD (default: 80)")
-@click.option("--sad", default=40, help="SAD threshold for classifying Low Active vs Inactive (default:100)")
-@click.option("--speed", default=35.0, help="Speed threshold (px/s) for classifying High Active vs Low Active (default: 35.0)")
+@click.option("--sad", default=20, help="SAD threshold for classifying Low Active vs Inactive (default:100)")
+@click.option("--speed", default=None, help="Speed threshold (px/s) for classifying High Active vs Low Active (default: None - global threshold)")
 @click.option("--debug", is_flag=True, help="show debug window")
 def activity_cmd(csv_path, output, box_size, sad, speed, debug):
     """
