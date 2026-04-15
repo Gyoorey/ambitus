@@ -346,10 +346,10 @@ def activity_cmd(csv_path, output, box_size, sad, speed, debug):
 @cli.command(name="extract")
 @click.argument("csv_path", type=click.Path())
 @click.option("--config", default=None, type=click.Path(), help="Path to the aligned ROI config JSON file (Optional, auto-detected if not provided)")
+@click.option("--video", default=None, type=click.Path(), help="Path to original video file for generating the sector debug image (Optional)")
 @click.option("--output", default=None, help="Output JSON filename (Optional)")
 @click.option("--debug", is_flag=True, help="Generate debug HTML dashboard")
-@click.option("--global-thresholds", default=None, type=click.Path(), help="Path to global thresholds JSON file (Optional)") 
-def extract_cmd(csv_path, config, output, debug, global_thresholds):
+def extract_cmd(csv_path, config, video, output, debug):
     """
     Extracts behavioral and spatial features from a filtered trajectory CSV.
     Uses adaptive thresholds to classify active/inactive phases.
@@ -363,7 +363,9 @@ def extract_cmd(csv_path, config, output, debug, global_thresholds):
     filename = os.path.splitext(os.path.basename(csv_path))[0]
 
     base_name = filename
-    if base_name.endswith('_trajectory_filtered'):
+    if base_name.endswith('_trajectory_filtered_classified'):
+        base_name = base_name.replace('_trajectory_filtered_classified', '')
+    elif base_name.endswith('_trajectory_filtered'):
         base_name = base_name.replace('_trajectory_filtered', '')
     elif base_name.endswith('_filtered'):
         base_name = base_name.replace('_filtered', '')
@@ -391,15 +393,10 @@ def extract_cmd(csv_path, config, output, debug, global_thresholds):
             return
 
     if output is None:
-        method_suffix = filename.replace(base_name, '').replace('_trajectory_filtered', '').replace('_trajectory', '')
+        method_suffix = filename.replace(base_name, '').replace('_trajectory_filtered_classified', '').replace('_trajectory_filtered', '').replace('_trajectory', '')
         output = os.path.join(base_dir, f"{base_name}{method_suffix}_features.json")
 
-    # ensure global thresholds path is valid if provided
-    if global_thresholds is not None and not os.path.exists(global_thresholds):
-        click.echo(f"ERROR: Global thresholds file not found: {global_thresholds}")
-        return
-
-    extract_features(csv_path, config_path=config, output_json_path=output, debug_html=debug, global_thresholds_path=global_thresholds)
+    extract_features(csv_path, config_path=config, output_json_path=output, debug_html=debug, video_path=video)
 
 @cli.command(name="extract_dir")
 @click.argument("results_dir", type=click.Path())
@@ -417,7 +414,7 @@ def extract_dir_cmd(results_dir, force, debug):
         click.echo(f"ERROR: Results directory not found: {root_dir}")
         return
         
-    csv_files = list(root_dir.rglob('*_trajectory_filtered.csv'))
+    csv_files = list(root_dir.rglob('*_trajectory_filtered_classified.csv'))
     
     if not csv_files:
         csv_files = list(root_dir.rglob('*_trajectory.csv'))
@@ -443,7 +440,9 @@ def extract_dir_cmd(results_dir, force, debug):
         filename = csv_file.stem
         
         base_name = filename
-        if base_name.endswith('_trajectory_filtered'):
+        if base_name.endswith('_trajectory_filtered_classified'):
+            base_name = base_name.replace('_trajectory_filtered_classified', '')
+        elif base_name.endswith('_trajectory_filtered'):
             base_name = base_name.replace('_trajectory_filtered', '')
         elif base_name.endswith('_filtered'):
             base_name = base_name.replace('_filtered', '')
@@ -472,7 +471,7 @@ def extract_dir_cmd(results_dir, force, debug):
         click.echo(f"\nExtracting features for: {csv_file.name}")
         
         try:
-            extract_features(str(csv_file), config_path=str(config_path), output_json_path=str(output_json), debug_html=debug, global_thresholds_path=global_path)
+            extract_features(str(csv_file), config_path=str(config_path), output_json_path=str(output_json), debug_html=debug)
             success_count += 1
         except Exception as e:
             click.echo(f"ERROR during extraction of {csv_file.name}: {e}")

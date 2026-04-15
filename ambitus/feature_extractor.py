@@ -4,10 +4,92 @@ import json
 import numpy as np
 import click
 import cv2
+import imageio
 from itertools import groupby
 
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+def generate_sector_debug_image(config_data, video_path, output_image_path):
+    """
+    Generates an image showing the first frame of the video (if available) 
+    overlaid with the arena polygons and the calculated sector boundaries.
+    """
+    inner_poly = np.array(config_data["inner_poly"], dtype=np.int32)
+    outer_poly = np.array(config_data["outer_poly"], dtype=np.int32)
+    arena_center = get_polygon_centroid(inner_poly)
+    
+    # Calculate phi exactly as in the extraction engine
+    upper_right_corner = outer_poly[3]
+    phi = calculate_angle(arena_center, upper_right_corner) - 45
+
+    img = None
+    if video_path and os.path.exists(video_path):
+
+        is_mpg = video_path.lower().endswith('.mpg')
+    
+        if is_mpg:
+            input_params = []
+            output_params = ['-vf', 'yadif,scale=768:576,setsar=1']
+            reader = imageio.get_reader(video_path, 'ffmpeg', input_params=input_params, output_params=output_params)
+            # Kiolvassuk az első frame-t (index 0)
+            frame = reader.get_data(0)
+            # Az imageio RGB-t ad vissza, de a cv2 BGR-t vár a rajzoláshoz és mentéshez
+            img = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            reader.close()
+        else:
+            cap = cv2.VideoCapture(video_path)
+            ret, frame = cap.read()
+            if ret:
+                img = frame
+            cap.release()
+        
+    if img is None:
+        # Create a blank black canvas if video is not available
+        max_x = np.max(outer_poly[:, 0]) + 100
+        max_y = np.max(outer_poly[:, 1]) + 100
+        img = np.zeros((max_y, max_x, 3), dtype=np.uint8)
+        print("WARNING: Could not read video frame. Drawing sectors on a blank canvas.")
+
+    # Draw Polygons
+    cv2.polylines(img, [outer_poly], isClosed=True, color=(255, 255, 255), thickness=2)
+    cv2.polylines(img, [inner_poly], isClosed=True, color=(200, 200, 200), thickness=1, lineType=cv2.LINE_AA)
+    
+    # Draw Center
+    cx, cy = arena_center
+    cv2.circle(img, (cx, cy), 5, (0, 255, 0), -1)
+
+    # Calculate max radius for drawing lines
+    max_r = max([np.hypot(p[0]-cx, p[1]-cy) for p in outer_poly]) * 1.1
+
+    # Draw the 8 sector boundaries based on the get_sector logic
+    # get_sector uses: shifted = (angle + 22.5) % 360
+    # Boundaries are where shifted is a multiple of 45: angle = k*45 - 22.5
+    # Since angle = arctan2 + phi, the draw angle is: k*45 - 22.5 - phi
+    for k in range(8):
+        theta_deg = k * 45 - 22.5 - phi
+        theta_rad = np.radians(theta_deg)
+        end_x = int(cx + max_r * np.cos(theta_rad))
+        end_y = int(cy + max_r * np.sin(theta_rad))
+        
+        # Draw boundary line
+        cv2.line(img, (cx, cy), (end_x, end_y), (0, 0, 255), 2)
+        
+        # Label the sector
+        # The center of the sector is at k*45 - phi
+        label_theta_deg = k * 45 - phi
+        label_theta_rad = np.radians(label_theta_deg)
+        text_x = int(cx + (max_r * 0.6) * np.cos(label_theta_rad))
+        text_y = int(cy + (max_r * 0.6) * np.sin(label_theta_rad))
+        
+        is_corner = (k % 2 != 0)
+        label = f"S{k}: {'Corner' if is_corner else 'Corridor'}"
+        color = (0, 165, 255) if is_corner else (255, 255, 0) # Orange for corner, Cyan for corridor
+        
+        cv2.putText(img, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+
+    cv2.imwrite(output_image_path, img)
+    print(f"Sector debug image saved to: {output_image_path}")
 
 # ==============================================================================
 # GEOMETRIC HELPERS
@@ -37,7 +119,7 @@ def get_sector(x, y, cx, cy, phi=0):
 # ==============================================================================
 # DEBUG VISUALIZATION (PLOTLY)
 # ==============================================================================
-def generate_feature_dashboard(times, speeds, states, t_lower, t_upper, 
+def generate_feature_dashboard(times, speeds, states, 
                                xs, ys, arena_center, directions, 
                                minute_distances, html_path):
     """
@@ -53,21 +135,16 @@ def generate_feature_dashboard(times, speeds, states, t_lower, t_upper,
             "3. Habituation (Distance per Minute)"
         ),
         row_heights=[0.5, 0.5],
-        shared_xaxes=False,  # DO NOT link the X axes!
-        shared_yaxes=False   # DO NOT link the Y axes!
+        shared_xaxes=False,  
+        shared_yaxes=False   
     )
 
-    # --- PLOT 1: SPEED & STATES (Top spanning row) ---
+    # --- PLOT 1: SPEED & STATES ---
     fig.add_trace(go.Scatter(
         x=times[:-1], y=speeds, mode='lines', line=dict(color='black', width=1), name='Speed (px/s)'
     ), row=1, col=1)
 
-    fig.add_hline(y=t_upper, line_dash="dash", line_color="green", annotation_text="T_upper", row=1, col=1)
-    fig.add_hline(y=t_lower, line_dash="dash", line_color="red", annotation_text="T_lower", row=1, col=1)
-
-    # Variables to ensure we only add the legend for the background ONCE
-    active_legend_added = False
-    inactive_legend_added = False
+    legend_flags = {2: False, 1: False, 0: False}
 
     start_idx = 0
     for key, group in groupby(states):
@@ -77,33 +154,35 @@ def generate_feature_dashboard(times, speeds, states, t_lower, t_upper,
         t0 = times[start_idx]
         t1 = times[end_idx]
         
-        if key == 1:
-            color = "rgba(0, 255, 0, 0.2)"
-            name = "Active Phase"
-            show_leg = not active_legend_added
-            active_legend_added = True
+        if key == 2:
+            color = "rgba(0, 255, 0, 0.2)" # Green
+            name = "High Active (Locomotion)"
+        elif key == 1:
+            color = "rgba(255, 255, 0, 0.3)" # Yellow
+            name = "Low Active (Micro-movement)"
         else:
-            color = "rgba(255, 0, 0, 0.2)"
-            name = "Inactive Phase"
-            show_leg = not inactive_legend_added
-            inactive_legend_added = True
+            color = "rgba(255, 0, 0, 0.2)" # Red
+            name = "Inactive (Resting)"
+            
+        show_leg = not legend_flags[key]
+        legend_flags[key] = True
             
         fig.add_vrect(
             x0=t0, x1=t1, fillcolor=color, layer="below", line_width=0, 
             row=1, col=1
         )
         
-        # Add a dummy invisible scatter trace just to force the legend to appear for the vrects
+        # Dummy trace for legend
         if show_leg:
             fig.add_trace(go.Scatter(
                 x=[None], y=[None], mode='markers',
-                marker=dict(size=10, color=color.replace('0.2', '0.8'), symbol='square'),
+                marker=dict(size=10, color=color.replace('0.2', '0.8').replace('0.3', '0.8'), symbol='square'),
                 name=name
             ), row=1, col=1)
             
         start_idx += length
 
-    # --- PLOT 2: SPATIAL MAP & DIRECTIONS (Bottom Left) ---
+    # --- PLOT 2: SPATIAL MAP & DIRECTIONS ---
     cw_x, cw_y = [], []
     ccw_x, ccw_y = [], []
     
@@ -118,15 +197,13 @@ def generate_feature_dashboard(times, speeds, states, t_lower, t_upper,
     
     fig.add_trace(go.Scatter(x=[arena_center[0]], y=[arena_center[1]], mode='markers', marker=dict(color='black', symbol='cross', size=10), name='Arena Center'), row=2, col=1)
 
-    # Ensure the spatial map looks like a map (inverted Y, 1:1 aspect ratio)
     fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1, row=2, col=1)
 
-    # --- PLOT 3: HABITUATION BAR CHART (Bottom Right) ---
+    # --- PLOT 3: HABITUATION BAR CHART ---
     mins = [f"Min {i+1}" for i in range(len(minute_distances))]
     fig.add_trace(go.Bar(x=mins, y=minute_distances, marker_color='purple', name='Distance/Min'), row=2, col=2)
 
     # --- LAYOUT & AXES SETTINGS ---
-    # Force the Top plot to start at X=0 and end at the last valid timestamp + 5s margin
     max_time = times[-1] if len(times) > 0 else 300
     fig.update_xaxes(range=[0, max_time + 5], row=1, col=1)
     
@@ -141,8 +218,8 @@ def generate_feature_dashboard(times, speeds, states, t_lower, t_upper,
     fig.update_layout(
         height=800, 
         width=1200, 
-        title_text="Feature Extraction Debug Dashboard", 
-        showlegend=True, # Legend is now ON
+        title_text="Feature Extraction Debug Dashboard (1s Smoothed States)", 
+        showlegend=True, 
         hovermode="closest"
     )
     
@@ -152,7 +229,7 @@ def generate_feature_dashboard(times, speeds, states, t_lower, t_upper,
 # ==============================================================================
 # FEATURE EXTRACTION ENGINE
 # ==============================================================================
-def extract_features(csv_path, config_path, output_json_path, debug_html=False, global_thresholds_path=None):
+def extract_features(csv_path, config_path, output_json_path, debug_html=False, video_path=None):
     if not os.path.exists(csv_path) or not os.path.exists(config_path):
         print(f"ERROR: Missing input files for extraction.")
         return
@@ -164,116 +241,122 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     outer_poly = np.array(config_data["outer_poly"], dtype=np.int32)
     arena_center = get_polygon_centroid(inner_poly)
 
-    # --- 2. LOAD DATA ---
-    times, xs, ys = [], [], []
+    # --- 2. LOAD DATA (Now expecting State column!) ---
+    times, xs, ys, raw_states = [], [], [], []
+    has_state_col = False
+    
     with open(csv_path, 'r') as f:
         reader = csv.reader(f, delimiter=';')
-        next(reader, None)
+        header = next(reader, None)
+        
+        if header and len(header) >= 4 and header[3].lower() == 'state':
+            has_state_col = True
+            
         for row in reader:
             try:
                 times.append(float(row[0]))
                 xs.append(float(row[1]))
                 ys.append(float(row[2]))
+                
+                if has_state_col:
+                    raw_states.append(int(row[3]))
+                else:
+                    raw_states.append(0) # Fallback
             except (ValueError, IndexError):
                 pass
-    if len(times) < 10: return
+                
+    if len(times) < 10: 
+        print("ERROR: Not enough data points.")
+        return
 
-    times, xs, ys = np.array(times), np.array(xs), np.array(ys)
+    times, xs, ys, raw_states = np.array(times), np.array(xs), np.array(ys), np.array(raw_states)
     total_time = times[-1] - times[0]
+
+    if not has_state_col:
+        print("WARNING: 'State' column not found in CSV! Classification features will be 0.")
 
     # --- 3. KINEMATICS ---
     dt = np.diff(times)  
     dx = np.diff(xs)
     dy = np.diff(ys)
-    distances = np.sqrt(dx**2 + dy**2)
-    speeds = distances / dt
     
-    accelerations = np.diff(speeds) / dt[:-1]
+    # Safe division
+    safe_dt = np.where(dt == 0, 0.001, dt)
+    distances = np.sqrt(dx**2 + dy**2)
+    speeds = distances / safe_dt
+    
+    accelerations = np.diff(speeds) / safe_dt[:-1]
     accel_variance = np.var(accelerations) if len(accelerations) > 0 else 0.0
 
     total_distance = np.sum(distances)
 
-    # --- 4. ADAPTIVE THRESHOLDS ---
-    t_lower, t_upper = 2.0, 5.0 # Fallback default
-    used_threshold_type = "Local (Per-Video)"
-
+    # --- 4. PHASE STABILIZATION (1s Majority Voting) ---
     avg_dt = total_time / len(times) if len(times) > 0 else 0.04
-    noise_floor_speed = 1.0 / avg_dt if avg_dt > 0 else 25.0
-
-    if global_thresholds_path and os.path.exists(global_thresholds_path):
-        with open(global_thresholds_path, 'r') as f:
-            glob_data = json.load(f)
-            if "T_lower_px_s" in glob_data and "T_upper_px_s" in glob_data:
-                t_lower = glob_data["T_lower_px_s"]
-                t_upper = glob_data["T_upper_px_s"]
-                used_threshold_type = "Global (Population)"
-    else:
-        # If no global file provided, calculate locally based on this specific video
-        moving_speeds = speeds[speeds > noise_floor_speed]
-        if len(moving_speeds) > 10:
-            t_lower = np.percentile(moving_speeds, 15)
-            t_upper = np.percentile(moving_speeds, 40)
-
-    # Ensure thresholds are reasonable (not below noise floor, and upper > lower)
-    if t_lower < noise_floor_speed:
-        t_lower = noise_floor_speed
-    if t_upper <= t_lower:
-        t_upper = t_lower * 1.5
-
-    # --- 5. HYSTERESIS & DEBOUNCING ---
-    # states for one second windows
     fps = int(1.0 / avg_dt) if avg_dt > 0 else 25
-    one_second_states = np.ones(len(speeds)//fps, dtype=int)*-1
+    
+    one_second_states = np.ones(len(speeds)//fps, dtype=int) * -1
 
-    # Temporal Smoothing: Aggregate for one second long sliding windows
     for i in range(len(one_second_states)):
         start = i * fps
         end = min((i + 1) * fps, len(speeds))
-        window_speeds = speeds[start:end]
+        window_states = raw_states[start:end]
         
-        if len(window_speeds) == 0:
+        if len(window_states) == 0:
             one_second_states[i] = 0
             continue
         
-        # majority vote logic
-        high_active_count = np.sum(window_speeds > t_upper)
-        low_active_count = np.sum((window_speeds <= t_upper) & (window_speeds >= t_lower))
-        inactive_count = np.sum(window_speeds < t_lower)
-        # three state logic: high active, low active, inactive. Majority vote with tie-breaking towards inactivity
+        high_active_count = np.sum(window_states == 2)
+        low_active_count = np.sum(window_states == 1)
+        inactive_count = np.sum(window_states == 0)
+        
+        # Tie-breaking towards low activity, then inactivity
         if high_active_count > low_active_count and high_active_count > inactive_count:
             one_second_states[i] = 2  # High Active
         elif low_active_count > high_active_count and low_active_count > inactive_count:
             one_second_states[i] = 1  # Low Active
         elif high_active_count + low_active_count > inactive_count:
-            one_second_states[i] = 1  # Mixed but more active than inactive, classify as Low Active
+            one_second_states[i] = 1  # Mixed but overall active -> Low Active
         else:
             one_second_states[i] = 0  # Inactive
 
-            
-    # convert to frame-level states (for plotting & phase grouping)
-    states = np.zeros(len(speeds), dtype=int)
+    # Convert back to frame-level states
+    smoothed_states = np.zeros(len(speeds), dtype=int)
     for i in range(len(one_second_states)):
         start = i * fps
         end = min((i + 1) * fps, len(speeds))
-        states[start:end] = one_second_states[i]
+        smoothed_states[start:end] = one_second_states[i]
+        
+    if end < len(speeds):
+        smoothed_states[end:] = one_second_states[-1] if len(one_second_states) > 0 else 0
 
-    # --- Group Phases ---
-    active_phases, inactive_phases = [], []
+    states = smoothed_states
+
+    # --- 5. PHASE ANALYSIS ---
+    high_active_phases = []
+    low_active_phases = []
+    inactive_phases = []
+    
     start_idx = 0
     for key, group in groupby(states):
         length = sum(1 for _ in group)
         end_idx = min(start_idx + length, len(times) - 1)
         phase_duration = times[end_idx] - times[start_idx]
+        phase_dist = np.sum(distances[start_idx:end_idx])
         
-        if key == 1 or key == 2:  # Active (both low and high)
-            phase_dist = np.sum(distances[start_idx:end_idx])
-            active_phases.append({'duration': phase_duration, 'distance': phase_dist})
+        if key == 2:
+            high_active_phases.append({'duration': phase_duration, 'distance': phase_dist})
+        elif key == 1:
+            low_active_phases.append({'duration': phase_duration, 'distance': phase_dist})
         else:
             inactive_phases.append({'duration': phase_duration})
+            
         start_idx += length
 
-    short_active = [p for p in active_phases if p['duration'] <= 5.0]
-    long_active = [p for p in active_phases if p['duration'] > 5.0]
+    # Combined activity
+    all_active_phases = high_active_phases + low_active_phases
+
+    short_active = [p for p in all_active_phases if p['duration'] <= 5.0]
+    long_active = [p for p in all_active_phases if p['duration'] > 5.0]
     short_inactive = [p for p in inactive_phases if p['duration'] <= 5.0]
     long_inactive = [p for p in inactive_phases if p['duration'] > 5.0]
 
@@ -287,24 +370,26 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
         if key: return float(np.sum([item[key] for item in lst]))
         return float(np.sum(lst))
 
+    total_high_active_time = safe_sum(high_active_phases, 'duration')
+    total_low_active_time = safe_sum(low_active_phases, 'duration')
+    total_inactive_time = safe_sum(inactive_phases, 'duration')
+
     # --- 6. SPATIAL & DIRECTIONAL ANALYSIS ---
     corner_time = 0.0
     cw_dist, ccw_dist = 0.0, 0.0
     u_turns = 0
     
     upper_right_corner = outer_poly[3]
-
     phi = calculate_angle(arena_center, upper_right_corner) - 45
 
     angles_to_center = [calculate_angle(arena_center, (x, y) + phi) for x, y in zip(xs, ys)]
     sector_counts = np.zeros(8, dtype=int)
     current_direction = 0 
     
-    # Store directions for debug plot (1 = CW, -1 = CCW, 0 = Unknown)
     directions_plot = np.zeros(len(xs)-1, dtype=int)
     
     for i in range(len(xs) - 1):
-        sec_id, is_corner = get_sector(xs[i], ys[i], arena_center[0], arena_center[1])
+        sec_id, is_corner = get_sector(xs[i], ys[i], arena_center[0], arena_center[1], phi=phi)
         sector_counts[sec_id] += 1
         
         if is_corner: corner_time += dt[i]
@@ -346,33 +431,33 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     if len(minute_distances) >= 5 and total_distance > 0:
         habituation_index = (minute_distances[0] - minute_distances[4]) / total_distance
 
-    # save the states and the angles for the debug csv
+    # save the smoothed states and the angles for the debug csv
     debug_csv_path = output_json_path.replace('.json', '_debug.csv')
     with open(debug_csv_path, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(['Time', 'X', 'Y', 'Speed', 'State', 'Angle_to_Center'])
         for i in range(len(times)-1):
             writer.writerow([times[i], xs[i], ys[i], speeds[i], states[i], angles_to_center[i]])
-    print(f"Debug CSV with states and directions saved to: {debug_csv_path}")
+    print(f"Debug CSV with smoothed 1s states and directions saved to: {debug_csv_path}")
 
     # --- 9. JSON COMPILATION ---
     features = {
         "Metadata": {
             "Analyzed_File": os.path.basename(csv_path),
             "Total_Time_Evaluated_s": round(float(total_time), 2),
-            "Threshold_Type": used_threshold_type,
-            "Adaptive_Threshold_Lower_px_s": round(float(t_lower), 2),
-            "Adaptive_Threshold_Upper_px_s": round(float(t_upper), 2)
+            "State_Classification_Source": "Pre-classified CSV (Video Pixel Variance)" if has_state_col else "ERROR: Missing"
         },
         "I_General_Locomotor": {
             "Total_Distance_px": round(float(total_distance), 2),
-            "Total_Activity_Time_s": round(safe_sum(active_phases, 'duration'), 2),
-            "Total_Inactivity_Time_s": round(safe_sum(inactive_phases, 'duration'), 2),
+            "Total_High_Activity_Time_s": round(total_high_active_time, 2),
+            "Total_Low_Activity_Time_s": round(total_low_active_time, 2),
+            "Total_Combined_Activity_Time_s": round(total_high_active_time + total_low_active_time, 2),
+            "Total_Inactivity_Time_s": round(total_inactive_time, 2),
             "Average_Speed_px_s": round(float(total_distance / total_time), 2) if total_time > 0 else 0.0,
-            "Average_Activity_Speed_px_s": round(float(total_distance / safe_sum(active_phases, 'duration')), 2) if safe_sum(active_phases, 'duration') > 0 else 0.0,
-            "Total_Activity_Number": len(active_phases),
+            "Average_Activity_Speed_px_s": round(float(total_distance / safe_sum(all_active_phases, 'duration')), 2) if safe_sum(all_active_phases, 'duration') > 0 else 0.0,
+            "Total_Activity_Number": len(all_active_phases),
             "Total_Inactivity_Number": len(inactive_phases),
-            "Mean_Activity_Phase_Duration_s": round(safe_mean(active_phases, 'duration'), 2),
+            "Mean_Activity_Phase_Duration_s": round(safe_mean(all_active_phases, 'duration'), 2),
             "Mean_Inactivity_Phase_Duration_s": round(safe_mean(inactive_phases, 'duration'), 2)
         },
         "II_Phase_Specific": {
@@ -429,20 +514,26 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
 
     # --- 10. GENERATE DEBUG DASHBOARD ---
     if debug_html:
+        print("Generating debug dashboard...")
         html_path = output_json_path.replace('.json', '_debug.html')
         generate_feature_dashboard(
-            times, speeds, states, t_lower, t_upper, 
+            times, speeds, states, 
             xs, ys, arena_center, directions_plot, 
             minute_distances, html_path
         )
+        # Generate the sector alignment image
+        img_path = output_json_path.replace('.json', '_sectors_debug.jpg')
+        if video_path is not None:
+            generate_sector_debug_image(config_data, video_path, img_path)
 
 
 @click.command()
 @click.argument("csv_path", type=click.Path(exists=True))
 @click.option("--config", default=None, type=click.Path(), help="Path to ROI config JSON file (Auto-detected if not provided)")
+@click.option("--video", default=None, type=click.Path(), help="Path to original video file for generating the sector debug image")
 @click.option("--output", default=None, help="Output JSON filename (Optional)")
 @click.option("--debug", is_flag=True, help="Generate a Plotly HTML dashboard to verify calculations")
-def cli(csv_path, config, output, debug):
+def cli(csv_path, config, video, output, debug):
     if not os.path.exists(csv_path):
         click.echo(f"ERROR: CSV file not found: {csv_path}")
         return
@@ -451,7 +542,7 @@ def cli(csv_path, config, output, debug):
     filename = os.path.splitext(os.path.basename(csv_path))[0]
     
     base_name = filename
-    for suffix in ['_trajectory_filtered', '_filtered', '_trajectory']:
+    for suffix in ['_trajectory_filtered_classified', '_classified', '_trajectory_filtered', '_filtered', '_trajectory']:
         if base_name.endswith(suffix): base_name = base_name.replace(suffix, '')
         
     for method in ['_simple', '_static', '_dof', '_kf', '_of', '_sub_dof_fusion', '_pure_of', '_mhi']:
@@ -466,10 +557,10 @@ def cli(csv_path, config, output, debug):
             return
             
     if output is None:
-        method_suffix = filename.replace(base_name, '').replace('_trajectory_filtered', '').replace('_trajectory', '')
+        method_suffix = filename.replace(base_name, '').replace('_trajectory_filtered_classified', '').replace('_trajectory_filtered', '').replace('_trajectory', '')
         output = os.path.join(base_dir, f"{base_name}{method_suffix}_features.json")
 
-    extract_features(csv_path, config_path=config, output_json_path=output, debug_html=debug, global_thresholds_path=None)
+    extract_features(csv_path, config_path=config, output_json_path=output, debug_html=debug, video_path=video)
 
 if __name__ == '__main__':
     cli()

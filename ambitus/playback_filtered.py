@@ -271,7 +271,7 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
                     # de az np.arctan2 (amit használtál) már elvégezte ezt a logikát.
                     # Húzunk egy 40 pixeles "mutatót" az aktuális szögre.
                     vec_len = 40
-                    angle_rad = np.radians(c_angle)
+                    angle_rad = np.radians(c_angle + 180.0) # +180, hogy a mutató a középpont felé mutasson
                     
                     # Az OpenCV koordináta rendszere szerint (jobbra +, lefelé +)
                     end_x = int(cx + vec_len * np.cos(angle_rad))
