@@ -156,18 +156,18 @@ def setup_dynamic_sectors(inner_poly, outer_poly):
         angle = (angle + 360) % 360
         corner_angles.append(angle)
     
-    # Compute sector boundaries at 25% and 75% between corners
     boundaries = []
+    corner_ratio = 0.2  # 20% corner
     for i in range(4):
         a_curr = corner_angles[i]
         a_next = corner_angles[(i + 1) % 4]
 
         delta = (a_next - a_curr) % 360
 
-        b1 = (a_curr + 0.25 * delta) % 360
-        b2 = (a_curr + 0.75 * delta) % 360
+        corridor_end = (a_next - corner_ratio * delta) % 360
+        corridor_start = (a_curr + corner_ratio * delta) % 360
 
-        boundaries.extend([b1, b2])
+        boundaries.extend([corridor_start, corridor_end])
 
         
     # 5. Define sector properties
