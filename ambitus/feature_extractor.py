@@ -17,7 +17,8 @@ def generate_sector_debug_image(config_data, video_path, output_image_path):
     """
     inner_poly = np.array(config_data["inner_poly"], dtype=np.int32)
     outer_poly = np.array(config_data["outer_poly"], dtype=np.int32)
-    arena_center = get_polygon_centroid(inner_poly)
+    # arena_center = get_polygon_centroid(inner_poly)
+    arena_center = get_polygon_center(inner_poly)
     
     # Calculate phi exactly as in the extraction engine
     upper_right_corner = outer_poly[3]
@@ -32,9 +33,9 @@ def generate_sector_debug_image(config_data, video_path, output_image_path):
             input_params = []
             output_params = ['-vf', 'yadif,scale=768:576,setsar=1']
             reader = imageio.get_reader(video_path, 'ffmpeg', input_params=input_params, output_params=output_params)
-            # Kiolvassuk az első frame-t (index 0)
+            # Read the first frame (index 0)
             frame = reader.get_data(0)
-            # Az imageio RGB-t ad vissza, de a cv2 BGR-t vár a rajzoláshoz és mentéshez
+            # imageio returns RGB, but cv2 expects BGR for drawing and saving
             img = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             reader.close()
         else:
@@ -51,41 +52,41 @@ def generate_sector_debug_image(config_data, video_path, output_image_path):
         img = np.zeros((max_y, max_x, 3), dtype=np.uint8)
         print("WARNING: Could not read video frame. Drawing sectors on a blank canvas.")
 
+    # Calculate Dynamic Sectors based on outer_poly corners
+    perspective_center, dynamic_sectors = setup_dynamic_sectors(inner_poly, outer_poly)
+    cx, cy = perspective_center
+    # cx, cy = arena_center
+
     # Draw Polygons
     cv2.polylines(img, [outer_poly], isClosed=True, color=(255, 255, 255), thickness=2)
     cv2.polylines(img, [inner_poly], isClosed=True, color=(200, 200, 200), thickness=1, lineType=cv2.LINE_AA)
     
     # Draw Center
-    cx, cy = arena_center
     cv2.circle(img, (cx, cy), 5, (0, 255, 0), -1)
 
     # Calculate max radius for drawing lines
     max_r = max([np.hypot(p[0]-cx, p[1]-cy) for p in outer_poly]) * 1.1
 
-    # Draw the 8 sector boundaries based on the get_sector logic
-    # get_sector uses: shifted = (angle + 22.5) % 360
-    # Boundaries are where shifted is a multiple of 45: angle = k*45 - 22.5
-    # Since angle = arctan2 + phi, the draw angle is: k*45 - 22.5 - phi
-    for k in range(8):
-        theta_deg = k * 45 - 22.5 - phi
-        theta_rad = np.radians(theta_deg)
+    # Draw the dynamic sector boundaries
+    for sec in dynamic_sectors:
+        # Draw boundary line (starting edge of the sector)
+        theta_rad = np.radians(sec['start'])
         end_x = int(cx + max_r * np.cos(theta_rad))
         end_y = int(cy + max_r * np.sin(theta_rad))
-        
-        # Draw boundary line
         cv2.line(img, (cx, cy), (end_x, end_y), (0, 0, 255), 2)
         
-        # Label the sector
-        # The center of the sector is at k*45 - phi
-        label_theta_deg = k * 45 - phi
-        label_theta_rad = np.radians(label_theta_deg)
+        # Label the sector in the middle of its span
+        mid_angle = sec['start'] + (sec['end'] - sec['start']) / 2
+        if sec['end'] < sec['start']: # Handle 360 wrap
+            mid_angle = sec['start'] + (sec['end'] + 360 - sec['start']) / 2
+        mid_angle %= 360
+        
+        label_theta_rad = np.radians(mid_angle)
         text_x = int(cx + (max_r * 0.6) * np.cos(label_theta_rad))
         text_y = int(cy + (max_r * 0.6) * np.sin(label_theta_rad))
         
-        is_corner = (k % 2 != 0)
-        label = f"S{k}: {'Corner' if is_corner else 'Corridor'}"
-        color = (0, 165, 255) if is_corner else (255, 255, 0) # Orange for corner, Cyan for corridor
-        
+        label = f"S{sec['id']}: {'Corner' if sec['is_corner'] else 'Corridor'}"
+        color = (0, 165, 255) if sec['is_corner'] else (255, 255, 0)
         cv2.putText(img, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
 
     cv2.imwrite(output_image_path, img)
@@ -99,6 +100,100 @@ def get_polygon_centroid(poly):
     if M["m00"] != 0:
         return (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
     return (0, 0)
+
+def get_polygon_center(poly):
+    """ 
+    Calculates the center of a polygon using its bounding box.
+    """
+    x, y, w, h = cv2.boundingRect(poly)
+    return (int(x + w / 2.0), int(y + h / 2.0))
+
+def geometric_median(points, eps=1e-5):
+    points = np.array(points, dtype=float)
+    guess = np.mean(points, axis=0)
+
+    while True:
+        distances = np.linalg.norm(points - guess, axis=1)
+
+        nonzero = distances > 1e-10
+        if not np.any(nonzero):
+            return guess
+
+        weights = 1 / distances[nonzero]
+        new_guess = np.sum(points[nonzero] * weights[:, None], axis=0) / np.sum(weights)
+
+        if np.linalg.norm(new_guess - guess) < eps:
+            return new_guess
+
+        guess = new_guess
+
+def setup_dynamic_sectors(inner_poly, outer_poly):
+    """
+    Calculates the perspective center using diagonal intersections and 
+    creates dynamically sized sectors based on the real corner angles.
+    """
+
+    def clean(poly):
+        poly = np.array(poly, dtype=float)
+        if len(poly) > 1 and np.array_equal(poly[0], poly[-1]):
+            poly = poly[:-1]
+        return poly
+
+    outer = clean(outer_poly)
+    inner = clean(inner_poly)
+    all_points = np.vstack((outer, inner))
+    cx, cy = geometric_median(all_points)
+       
+    sorted_inner = sorted(
+        inner,
+        key=lambda p: np.arctan2(p[1] - cy, p[0] - cx)
+    )
+
+    # --- Compute corner angles ---
+    corner_angles = []
+    for p in sorted_inner:
+        angle = np.degrees(np.arctan2(p[1] - cy, p[0] - cx))
+        angle = (angle + 360) % 360
+        corner_angles.append(angle)
+    
+    # Compute sector boundaries at 25% and 75% between corners
+    boundaries = []
+    for i in range(4):
+        a_curr = corner_angles[i]
+        a_next = corner_angles[(i + 1) % 4]
+
+        delta = (a_next - a_curr) % 360
+
+        b1 = (a_curr + 0.25 * delta) % 360
+        b2 = (a_curr + 0.75 * delta) % 360
+
+        boundaries.extend([b1, b2])
+
+        
+    # 5. Define sector properties
+    sectors = [
+        {'start': boundaries[0], 'end': boundaries[1], 'id': 0, 'is_corner': False}, # Corridor 0
+        {'start': boundaries[1], 'end': boundaries[2], 'id': 1, 'is_corner': True},  # Corner 1
+        {'start': boundaries[2], 'end': boundaries[3], 'id': 2, 'is_corner': False}, # Corridor 1
+        {'start': boundaries[3], 'end': boundaries[4], 'id': 3, 'is_corner': True},  # Corner 2
+        {'start': boundaries[4], 'end': boundaries[5], 'id': 4, 'is_corner': False}, # Corridor 2
+        {'start': boundaries[5], 'end': boundaries[6], 'id': 5, 'is_corner': True},  # Corner 3
+        {'start': boundaries[6], 'end': boundaries[7], 'id': 6, 'is_corner': False}, # Corridor 3
+        {'start': boundaries[7], 'end': boundaries[0], 'id': 7, 'is_corner': True},  # Corner 0
+    ]
+    
+    # integer center for drawing purposes
+    return (int(cx), int(cy)), sectors
+
+def get_sector_dynamic(x, y, cx, cy, sectors):
+    angle = (np.degrees(np.arctan2(y - cy, x - cx)) + 360) % 360
+    for sec in sectors:
+        s, e = sec['start'], sec['end']
+        if s < e:
+            if s <= angle < e: return sec['id'], sec['is_corner']
+        else: # Wraps around 360 (usually Sector 7)
+            if angle >= s or angle < e: return sec['id'], sec['is_corner']
+    return 0, False
 
 def calculate_angle(p1, p2):
     return np.degrees(np.arctan2(p2[1] - p1[1], p2[0] - p1[0]))
@@ -239,7 +334,8 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
         config_data = json.load(f)
     inner_poly = np.array(config_data["inner_poly"], dtype=np.int32)
     outer_poly = np.array(config_data["outer_poly"], dtype=np.int32)
-    arena_center = get_polygon_centroid(inner_poly)
+    # arena_center = get_polygon_centroid(inner_poly)
+    arena_center = get_polygon_center(inner_poly)
 
     # --- 2. LOAD DATA (Now expecting State column!) ---
     times, xs, ys, raw_states = [], [], [], []
@@ -379,17 +475,20 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     cw_dist, ccw_dist = 0.0, 0.0
     u_turns = 0
     
-    upper_right_corner = outer_poly[3]
-    phi = calculate_angle(arena_center, upper_right_corner) - 45
+    # Initialize the new dynamic sectors
+    perspective_center, dynamic_sectors = setup_dynamic_sectors(inner_poly, outer_poly)
+    cx, cy = perspective_center
 
-    angles_to_center = [calculate_angle(arena_center, (x, y) + phi) for x, y in zip(xs, ys)]
+    # Compute raw angles from the perspective center (no phi offset needed anymore)
+    angles_to_center = [(np.degrees(np.arctan2(y - cy, x - cx)) + 360) % 360 for x, y in zip(xs, ys)]
+    
     sector_counts = np.zeros(8, dtype=int)
     current_direction = 0 
-    
     directions_plot = np.zeros(len(xs)-1, dtype=int)
     
     for i in range(len(xs) - 1):
-        sec_id, is_corner = get_sector(xs[i], ys[i], arena_center[0], arena_center[1], phi=phi)
+        # Use the dynamic sector logic
+        sec_id, is_corner = get_sector_dynamic(xs[i], ys[i], cx, cy, dynamic_sectors)
         sector_counts[sec_id] += 1
         
         if is_corner: corner_time += dt[i]
@@ -431,7 +530,7 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     if len(minute_distances) >= 5 and total_distance > 0:
         habituation_index = (minute_distances[0] - minute_distances[4]) / total_distance
 
-    # save the smoothed states and the angles for the debug csv
+    # Save the smoothed states and the angles for the debug csv
     debug_csv_path = output_json_path.replace('.json', '_debug.csv')
     with open(debug_csv_path, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)

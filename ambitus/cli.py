@@ -260,7 +260,15 @@ def run_pipeline(video_path, base_image, base_config, method, min_area, skip_sec
     
     click.echo("Step 4: Generating heatmap...")
     generate_heatmap(filtered_csv, None, sigma, alpha, show, video_dir=str(v_path.parent))
-    
+
+    click.echo("Step 5: Classifying activity...")
+    classified_csv = os.path.join(result_dir, f"{video_name}_{method}_trajectory_filtered_classified.csv")
+    classify_activities(filtered_csv, output_path=classified_csv, debug=debug)
+
+    click.echo("Step 6: Extracting features...")
+    features_json = os.path.join(result_dir, f"{video_name}_{method}_features.json")
+    extract_features(classified_csv, aligned_config, features_json, debug_html=debug, video_path=video_path)
+
     click.echo(f"Pipeline complete! Results saved to {result_dir}")
 
 @cli.command(name="run_dir")
