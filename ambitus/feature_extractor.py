@@ -10,105 +10,15 @@ from itertools import groupby
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-def generate_sector_debug_image(config_data, video_path, output_image_path):
-    """
-    Generates an image showing the first frame of the video (if available) 
-    overlaid with the arena polygons and the calculated sector boundaries.
-    """
-    inner_poly = np.array(config_data["inner_poly"], dtype=np.int32)
-    outer_poly = np.array(config_data["outer_poly"], dtype=np.int32)
-    # arena_center = get_polygon_centroid(inner_poly)
-    arena_center = get_polygon_center(inner_poly)
-    
-    # Calculate phi exactly as in the extraction engine
-    upper_right_corner = outer_poly[3]
-    phi = calculate_angle(arena_center, upper_right_corner) - 45
-
-    img = None
-    if video_path and os.path.exists(video_path):
-
-        is_mpg = video_path.lower().endswith('.mpg')
-    
-        if is_mpg:
-            input_params = []
-            output_params = ['-vf', 'yadif,scale=768:576,setsar=1']
-            reader = imageio.get_reader(video_path, 'ffmpeg', input_params=input_params, output_params=output_params)
-            # Read the first frame (index 0)
-            frame = reader.get_data(0)
-            # imageio returns RGB, but cv2 expects BGR for drawing and saving
-            img = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            reader.close()
-        else:
-            cap = cv2.VideoCapture(video_path)
-            ret, frame = cap.read()
-            if ret:
-                img = frame
-            cap.release()
-        
-    if img is None:
-        # Create a blank black canvas if video is not available
-        max_x = np.max(outer_poly[:, 0]) + 100
-        max_y = np.max(outer_poly[:, 1]) + 100
-        img = np.zeros((max_y, max_x, 3), dtype=np.uint8)
-        print("WARNING: Could not read video frame. Drawing sectors on a blank canvas.")
-
-    # Calculate Dynamic Sectors based on outer_poly corners
-    perspective_center, dynamic_sectors = setup_dynamic_sectors(inner_poly, outer_poly)
-    cx, cy = perspective_center
-    # cx, cy = arena_center
-
-    # Draw Polygons
-    cv2.polylines(img, [outer_poly], isClosed=True, color=(255, 255, 255), thickness=2)
-    cv2.polylines(img, [inner_poly], isClosed=True, color=(200, 200, 200), thickness=1, lineType=cv2.LINE_AA)
-    
-    # Draw Center
-    cv2.circle(img, (cx, cy), 5, (0, 255, 0), -1)
-
-    # Calculate max radius for drawing lines
-    max_r = max([np.hypot(p[0]-cx, p[1]-cy) for p in outer_poly]) * 1.1
-
-    # Draw the dynamic sector boundaries
-    for sec in dynamic_sectors:
-        # Draw boundary line (starting edge of the sector)
-        theta_rad = np.radians(sec['start'])
-        end_x = int(cx + max_r * np.cos(theta_rad))
-        end_y = int(cy + max_r * np.sin(theta_rad))
-        cv2.line(img, (cx, cy), (end_x, end_y), (0, 0, 255), 2)
-        
-        # Label the sector in the middle of its span
-        mid_angle = sec['start'] + (sec['end'] - sec['start']) / 2
-        if sec['end'] < sec['start']: # Handle 360 wrap
-            mid_angle = sec['start'] + (sec['end'] + 360 - sec['start']) / 2
-        mid_angle %= 360
-        
-        label_theta_rad = np.radians(mid_angle)
-        text_x = int(cx + (max_r * 0.6) * np.cos(label_theta_rad))
-        text_y = int(cy + (max_r * 0.6) * np.sin(label_theta_rad))
-        
-        label = f"S{sec['id']}: {'Corner' if sec['is_corner'] else 'Corridor'}"
-        color = (0, 165, 255) if sec['is_corner'] else (255, 255, 0)
-        cv2.putText(img, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
-
-    cv2.imwrite(output_image_path, img)
-    print(f"Sector debug image saved to: {output_image_path}")
-
 # ==============================================================================
-# GEOMETRIC HELPERS
+# GEOMETRIC HELPERS (Ray Intersection & Line of Sight Zones)
 # ==============================================================================
-def get_polygon_centroid(poly):
-    M = cv2.moments(poly)
-    if M["m00"] != 0:
-        return (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
-    return (0, 0)
-
-def get_polygon_center(poly):
-    """ 
-    Calculates the center of a polygon using its bounding box.
-    """
-    x, y, w, h = cv2.boundingRect(poly)
-    return (int(x + w / 2.0), int(y + h / 2.0))
 
 def geometric_median(points, eps=1e-5):
+    """
+    Calculates the robust geometric median (spatial median) of a set of points 
+    using the Weiszfeld algorithm (iterative least squares).
+    """
     points = np.array(points, dtype=float)
     guess = np.mean(points, axis=0)
 
@@ -127,74 +37,130 @@ def geometric_median(points, eps=1e-5):
 
         guess = new_guess
 
-def setup_dynamic_sectors(inner_poly, outer_poly):
+def get_arena_center(inner_poly, outer_poly):
     """
-    Calculates the perspective center using diagonal intersections and 
-    creates dynamically sized sectors based on the real corner angles.
+    Calculates the highly robust perspective center of the arena 
+    by finding the geometric median of all inner and outer points.
     """
-
-    def clean(poly):
-        poly = np.array(poly, dtype=float)
-        if len(poly) > 1 and np.array_equal(poly[0], poly[-1]):
-            poly = poly[:-1]
-        return poly
-
-    outer = clean(outer_poly)
-    inner = clean(inner_poly)
-    all_points = np.vstack((outer, inner))
+    # Combine all points from both polygons
+    all_points = np.vstack((outer_poly, inner_poly))
     cx, cy = geometric_median(all_points)
-       
-    sorted_inner = sorted(
-        inner,
-        key=lambda p: np.arctan2(p[1] - cy, p[0] - cx)
-    )
+    return (int(cx), int(cy))
 
-    # --- Compute corner angles ---
-    corner_angles = []
-    for p in sorted_inner:
-        angle = np.degrees(np.arctan2(p[1] - cy, p[0] - cx))
-        angle = (angle + 360) % 360
-        corner_angles.append(angle)
+def get_poly_centroid(poly):
+    """ Calculates the exact center of mass for a polygon (for labeling). """
+    M = cv2.moments(poly)
+    if M["m00"] != 0:
+        return (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
+    return (int(poly[0][0]), int(poly[0][1]))
+
+def get_ray_intersection(A, B, outer_poly):
+    """
+    Shoots a mathematical ray from A through B, and finds where it precisely 
+    intersects the outer_poly. This extends the inner walls to the outer walls.
+    """
+    x1, y1 = A
+    x2, y2 = B
     
-    boundaries = []
-    corner_ratio = 0.2  # 20% corner
-    for i in range(4):
-        a_curr = corner_angles[i]
-        a_next = corner_angles[(i + 1) % 4]
-
-        delta = (a_next - a_curr) % 360
-
-        corridor_end = (a_next - corner_ratio * delta) % 360
-        corridor_start = (a_curr + corner_ratio * delta) % 360
-
-        boundaries.extend([corridor_start, corridor_end])
-
+    best_t = float('inf')
+    best_P = None
+    
+    n = len(outer_poly)
+    for i in range(n):
+        x3, y3 = outer_poly[i]
+        x4, y4 = outer_poly[(i+1)%n]
         
-    # 5. Define sector properties
-    sectors = [
-        {'start': boundaries[0], 'end': boundaries[1], 'id': 0, 'is_corner': False}, # Corridor 0
-        {'start': boundaries[1], 'end': boundaries[2], 'id': 1, 'is_corner': True},  # Corner 1
-        {'start': boundaries[2], 'end': boundaries[3], 'id': 2, 'is_corner': False}, # Corridor 1
-        {'start': boundaries[3], 'end': boundaries[4], 'id': 3, 'is_corner': True},  # Corner 2
-        {'start': boundaries[4], 'end': boundaries[5], 'id': 4, 'is_corner': False}, # Corridor 2
-        {'start': boundaries[5], 'end': boundaries[6], 'id': 5, 'is_corner': True},  # Corner 3
-        {'start': boundaries[6], 'end': boundaries[7], 'id': 6, 'is_corner': False}, # Corridor 3
-        {'start': boundaries[7], 'end': boundaries[0], 'id': 7, 'is_corner': True},  # Corner 0
-    ]
+        dx1 = x2 - x1
+        dy1 = y2 - y1
+        dx2 = x4 - x3
+        dy2 = y4 - y3
+        
+        det = dx1 * (-dy2) - dy1 * (-dx2)
+        if abs(det) < 1e-6: continue # Parallel lines
+        
+        cx_ax = x3 - x1
+        cy_ay = y3 - y1
+        
+        t = (cx_ax * (-dy2) - cy_ay * (-dx2)) / det
+        u = (dx1 * cy_ay - dy1 * cx_ax) / det
+        
+        # t must be > 0 (forward direction of ray)
+        # u must be between 0 and 1 (must hit the actual segment of outer_poly)
+        if t > 0.001 and -0.001 <= u <= 1.001:
+            if t < best_t:
+                best_t = t
+                best_P = (x1 + t * dx1, y1 + t * dy1)
+                
+    if best_P is not None:
+        return best_P
+    return B # Fallback safety
+
+def clean_poly(poly):
+    poly = np.array(poly, dtype=float)
+    if len(poly) > 1 and np.linalg.norm(poly[0] - poly[-1]) < 1.0:
+        poly = poly[:-1]
+    return poly
+
+def build_arena_zones(inner_poly, outer_poly):
+    """
+    Creates 8 exact geometric zones (4 corners, 4 corridors) based on the 
+    Line-of-Sight rules requested.
+    """
+   
+    zones = []
+    n = len(inner_poly)
     
-    # integer center for drawing purposes
-    return (int(cx), int(cy)), sectors
+    # Calculate all forward and backward intersections for the inner corners
+    R_F = [] # Forward rays
+    R_B = [] # Backward rays
+    for i in range(n):
+        prev_i = (i - 1) % n
+        next_i = (i + 1) % n
+        
+        # Ray extending the incoming wall forward
+        r_f = get_ray_intersection(inner_poly[prev_i], inner_poly[i], outer_poly)
+        R_F.append(r_f)
+        
+        # Ray extending the outgoing wall backward
+        r_b = get_ray_intersection(inner_poly[next_i], inner_poly[i], outer_poly)
+        R_B.append(r_b)
+        
+    for i in range(n):
+        next_i = (i + 1) % n
+        
+        # 1. CORRIDOR (Between inner point i and next_i)
+        corridor_poly = np.array([
+            inner_poly[i],
+            inner_poly[next_i],
+            R_B[next_i],
+            R_F[i]
+        ], dtype=np.int32)
+        
+        zones.append({
+            "id": i * 2,
+            "poly": corridor_poly,
+            "is_corner": False,
+            "label": f"Corridor {i}"
+        })
+        
+        # 2. CORNER (At inner point next_i)
+        corner_poly = np.array([
+            inner_poly[next_i],
+            R_F[next_i],
+            outer_poly[next_i], 
+            R_B[next_i]
+        ], dtype=np.int32)
+        
+        zones.append({
+            "id": i * 2 + 1,
+            "poly": corner_poly,
+            "is_corner": True,
+            "label": f"Corner {next_i}"
+        })
+        
+    return zones
 
-def get_sector_dynamic(x, y, cx, cy, sectors):
-    angle = (np.degrees(np.arctan2(y - cy, x - cx)) + 360) % 360
-    for sec in sectors:
-        s, e = sec['start'], sec['end']
-        if s < e:
-            if s <= angle < e: return sec['id'], sec['is_corner']
-        else: # Wraps around 360 (usually Sector 7)
-            if angle >= s or angle < e: return sec['id'], sec['is_corner']
-    return 0, False
-
+# For kinematic (CW/CCW) features
 def calculate_angle(p1, p2):
     return np.degrees(np.arctan2(p2[1] - p1[1], p2[0] - p1[0]))
 
@@ -203,24 +169,65 @@ def normalize_angle_diff(diff):
     while diff > 180: diff -= 360
     return diff
 
-def get_sector(x, y, cx, cy, phi=0):
-    angle = np.degrees(np.arctan2(y - cy, x - cx)) + phi
-    if angle < 0: angle += 360  
-    shifted = (angle + 22.5) % 360
-    sector_id = int(shifted // 45)
-    is_corner = (sector_id % 2 != 0)
-    return sector_id, is_corner
+# ==============================================================================
+# DEBUG VISUALIZATION
+# ==============================================================================
+def generate_zone_debug_image(config_data, video_path, output_image_path):
+    """
+    Draws the mathematically calculated corner and corridor zones 
+    perfectly overlaid on the video frame.
+    """
+    inner_poly = np.array(config_data["inner_poly"], dtype=np.int32)
+    outer_poly = np.array(config_data["outer_poly"], dtype=np.int32)
+    inner_clean = clean_poly(inner_poly)
+    outer_clean = clean_poly(outer_poly)
 
-# ==============================================================================
-# DEBUG VISUALIZATION (PLOTLY)
-# ==============================================================================
-def generate_feature_dashboard(times, speeds, states, 
-                               xs, ys, arena_center, directions, 
-                               minute_distances, html_path):
-    """
-    Creates a 3-panel HTML dashboard to debug the feature extraction logic.
-    """
-    # Create subplots with explicitly INDEPENDENT axes
+    # --- load frame ---
+    img = None
+    if video_path and os.path.exists(video_path):
+        is_mpg = video_path.lower().endswith('.mpg')
+        if is_mpg:
+            reader = imageio.get_reader(video_path, 'ffmpeg', input_params=[], output_params=['-vf', 'yadif,scale=768:576,setsar=1'])
+            frame = reader.get_data(0)
+            img = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            reader.close()
+        else:
+            cap = cv2.VideoCapture(video_path)
+            ret, frame = cap.read()
+            if ret: img = frame
+            cap.release()
+
+    if img is None:
+        max_x = np.max(outer_poly[:, 0]) + 100
+        max_y = np.max(outer_poly[:, 1]) + 100
+        img = np.zeros((max_y, max_x, 3), dtype=np.uint8)
+
+    # --- generate the precise zones ---
+    zones = build_arena_zones(inner_clean, outer_clean)
+
+    overlay = img.copy()
+
+    # Draw colored fills
+    for z in zones:
+        color = (0, 0, 255) if z["is_corner"] else (0, 255, 0)
+        cv2.fillPoly(overlay, [z["poly"]], color)
+
+    # Blend
+    alpha = 0.3
+    cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+
+    # Draw exact boundaries and labels
+    for z in zones:
+        color = (0, 0, 255) if z["is_corner"] else (0, 255, 0)
+        cv2.polylines(img, [z["poly"]], True, color, 2)
+
+    cv2.polylines(img, [outer_poly], True, (255, 255, 255), 2)
+    cv2.polylines(img, [inner_poly], True, (200, 200, 200), 2)
+
+    cv2.imwrite(output_image_path, img)
+    print(f"Geometric Zone debug image saved to: {output_image_path}")
+
+def generate_feature_dashboard(times, speeds, states, xs, ys, arena_center, directions, minute_distances, html_path):
     fig = make_subplots(
         rows=2, cols=2,
         specs=[[{"colspan": 2}, None], [{}, {}]],
@@ -234,40 +241,28 @@ def generate_feature_dashboard(times, speeds, states,
         shared_yaxes=False   
     )
 
-    # --- PLOT 1: SPEED & STATES ---
-    fig.add_trace(go.Scatter(
-        x=times[:-1], y=speeds, mode='lines', line=dict(color='black', width=1), name='Speed (px/s)'
-    ), row=1, col=1)
+    fig.add_trace(go.Scatter(x=times[:-1], y=speeds, mode='lines', line=dict(color='black', width=1), name='Speed (px/s)'), row=1, col=1)
 
     legend_flags = {2: False, 1: False, 0: False}
-
     start_idx = 0
     for key, group in groupby(states):
         length = sum(1 for _ in group)
         end_idx = min(start_idx + length, len(times) - 2)
         
-        t0 = times[start_idx]
-        t1 = times[end_idx]
+        t0, t1 = times[start_idx], times[end_idx]
         
         if key == 2:
-            color = "rgba(0, 255, 0, 0.2)" # Green
-            name = "High Active (Locomotion)"
+            color, name = "rgba(0, 255, 0, 0.2)", "High Active (Locomotion)"
         elif key == 1:
-            color = "rgba(255, 255, 0, 0.3)" # Yellow
-            name = "Low Active (Micro-movement)"
+            color, name = "rgba(255, 255, 0, 0.3)", "Low Active (Micro-movement)"
         else:
-            color = "rgba(255, 0, 0, 0.2)" # Red
-            name = "Inactive (Resting)"
+            color, name = "rgba(255, 0, 0, 0.2)", "Inactive (Resting)"
             
         show_leg = not legend_flags[key]
         legend_flags[key] = True
             
-        fig.add_vrect(
-            x0=t0, x1=t1, fillcolor=color, layer="below", line_width=0, 
-            row=1, col=1
-        )
+        fig.add_vrect(x0=t0, x1=t1, fillcolor=color, layer="below", line_width=0, row=1, col=1)
         
-        # Dummy trace for legend
         if show_leg:
             fig.add_trace(go.Scatter(
                 x=[None], y=[None], mode='markers',
@@ -277,11 +272,8 @@ def generate_feature_dashboard(times, speeds, states,
             
         start_idx += length
 
-    # --- PLOT 2: SPATIAL MAP & DIRECTIONS ---
-    cw_x, cw_y = [], []
-    ccw_x, ccw_y = [], []
-    
-    for i in range(len(directions)):
+    cw_x, cw_y, ccw_x, ccw_y = [], [], [], []
+    for i in range(len(directions)-1): # Safe loop
         if directions[i] == 1:
             cw_x.append(xs[i]); cw_y.append(ys[i])
         elif directions[i] == -1:
@@ -289,33 +281,20 @@ def generate_feature_dashboard(times, speeds, states,
             
     fig.add_trace(go.Scatter(x=cw_x, y=cw_y, mode='markers', marker=dict(color='blue', size=3), name='CW Move'), row=2, col=1)
     fig.add_trace(go.Scatter(x=ccw_x, y=ccw_y, mode='markers', marker=dict(color='orange', size=3), name='CCW Move'), row=2, col=1)
-    
     fig.add_trace(go.Scatter(x=[arena_center[0]], y=[arena_center[1]], mode='markers', marker=dict(color='black', symbol='cross', size=10), name='Arena Center'), row=2, col=1)
 
     fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1, row=2, col=1)
 
-    # --- PLOT 3: HABITUATION BAR CHART ---
     mins = [f"Min {i+1}" for i in range(len(minute_distances))]
     fig.add_trace(go.Bar(x=mins, y=minute_distances, marker_color='purple', name='Distance/Min'), row=2, col=2)
 
-    # --- LAYOUT & AXES SETTINGS ---
     max_time = times[-1] if len(times) > 0 else 300
     fig.update_xaxes(range=[0, max_time + 5], row=1, col=1)
     
-    fig.update_xaxes(title_text="Time (sec)", row=1, col=1)
-    fig.update_yaxes(title_text="Speed (px/s)", row=1, col=1)
-    
-    fig.update_xaxes(title_text="X Pixel", row=2, col=1)
-    fig.update_yaxes(title_text="Y Pixel", row=2, col=1)
-    
-    fig.update_yaxes(title_text="Distance (px)", row=2, col=2)
-
     fig.update_layout(
-        height=800, 
-        width=1200, 
-        title_text="Feature Extraction Debug Dashboard (1s Smoothed States)", 
-        showlegend=True, 
-        hovermode="closest"
+        height=800, width=1200, 
+        title_text="Feature Extraction Debug Dashboard", 
+        showlegend=True, hovermode="closest"
     )
     
     fig.write_html(html_path)
@@ -334,10 +313,14 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
         config_data = json.load(f)
     inner_poly = np.array(config_data["inner_poly"], dtype=np.int32)
     outer_poly = np.array(config_data["outer_poly"], dtype=np.int32)
-    # arena_center = get_polygon_centroid(inner_poly)
-    arena_center = get_polygon_center(inner_poly)
+    inner_poly = clean_poly(inner_poly)
+    outer_poly = clean_poly(outer_poly)
+    arena_center = get_arena_center(inner_poly, outer_poly)
 
-    # --- 2. LOAD DATA (Now expecting State column!) ---
+    # --- 2. BUILD PHYSICAL ZONES ---
+    zones = build_arena_zones(inner_poly, outer_poly)
+
+    # --- 3. LOAD DATA (Now expecting State column!) ---
     times, xs, ys, raw_states = [], [], [], []
     has_state_col = False
     
@@ -371,12 +354,11 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     if not has_state_col:
         print("WARNING: 'State' column not found in CSV! Classification features will be 0.")
 
-    # --- 3. KINEMATICS ---
+    # --- 4. KINEMATICS ---
     dt = np.diff(times)  
     dx = np.diff(xs)
     dy = np.diff(ys)
     
-    # Safe division
     safe_dt = np.where(dt == 0, 0.001, dt)
     distances = np.sqrt(dx**2 + dy**2)
     speeds = distances / safe_dt
@@ -386,17 +368,18 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
 
     total_distance = np.sum(distances)
 
-    # --- 4. PHASE STABILIZATION (1s Majority Voting) ---
+    # --- 5. PHASE STABILIZATION (1s Majority Voting for STATES) ---
     avg_dt = total_time / len(times) if len(times) > 0 else 0.04
     fps = int(1.0 / avg_dt) if avg_dt > 0 else 25
     
-    one_second_states = np.ones(len(speeds)//fps, dtype=int) * -1
+    one_second_states = np.ones(len(speeds)//fps + 1, dtype=int) * -1
 
     for i in range(len(one_second_states)):
         start = i * fps
         end = min((i + 1) * fps, len(speeds))
-        window_states = raw_states[start:end]
+        if start >= end: break
         
+        window_states = raw_states[start:end]
         if len(window_states) == 0:
             one_second_states[i] = 0
             continue
@@ -405,32 +388,26 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
         low_active_count = np.sum(window_states == 1)
         inactive_count = np.sum(window_states == 0)
         
-        # Tie-breaking towards low activity, then inactivity
         if high_active_count > low_active_count and high_active_count > inactive_count:
-            one_second_states[i] = 2  # High Active
+            one_second_states[i] = 2  
         elif low_active_count > high_active_count and low_active_count > inactive_count:
-            one_second_states[i] = 1  # Low Active
+            one_second_states[i] = 1  
         elif high_active_count + low_active_count > inactive_count:
-            one_second_states[i] = 1  # Mixed but overall active -> Low Active
+            one_second_states[i] = 1  
         else:
-            one_second_states[i] = 0  # Inactive
+            one_second_states[i] = 0  
 
-    # Convert back to frame-level states
     smoothed_states = np.zeros(len(speeds), dtype=int)
     for i in range(len(one_second_states)):
         start = i * fps
         end = min((i + 1) * fps, len(speeds))
-        smoothed_states[start:end] = one_second_states[i]
-        
-    if end < len(speeds):
-        smoothed_states[end:] = one_second_states[-1] if len(one_second_states) > 0 else 0
+        if start < end:
+            smoothed_states[start:end] = one_second_states[i]
 
     states = smoothed_states
 
-    # --- 5. PHASE ANALYSIS ---
-    high_active_phases = []
-    low_active_phases = []
-    inactive_phases = []
+    # --- 6. PHASE ANALYSIS ---
+    high_active_phases, low_active_phases, inactive_phases = [], [], []
     
     start_idx = 0
     for key, group in groupby(states):
@@ -448,7 +425,6 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
             
         start_idx += length
 
-    # Combined activity
     all_active_phases = high_active_phases + low_active_phases
 
     short_active = [p for p in all_active_phases if p['duration'] <= 5.0]
@@ -470,55 +446,103 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     total_low_active_time = safe_sum(low_active_phases, 'duration')
     total_inactive_time = safe_sum(inactive_phases, 'duration')
 
-    # --- 6. SPATIAL & DIRECTIONAL ANALYSIS ---
-    corner_time = 0.0
+    # --- 7. DIRECTIONAL STABILIZATION (1s Majority Voting for CW/CCW) ---
+    raw_directions = np.zeros(len(xs), dtype=int)
+    angles_to_center = [calculate_angle(arena_center, (x, y)) for x, y in zip(xs, ys)]
+    
+    # Kiszámoljuk nyersen pontról-pontra
+    for i in range(len(xs) - 1):
+        angle_diff = normalize_angle_diff(angles_to_center[i+1] - angles_to_center[i])
+        if angle_diff > 0.5:
+            raw_directions[i] = 1   # CW
+        elif angle_diff < -0.5:
+            raw_directions[i] = -1  # CCW
+            
+    # Copy for the last element
+    if len(raw_directions) > 1:
+        raw_directions[-1] = raw_directions[-2]
+
+    # Csináljuk meg a többségi szavazást 1 másodperces (fps) ablakokra
+    smoothed_directions = np.zeros(len(xs), dtype=int)
+    for i in range((len(xs) // fps) + 1):
+        start = i * fps
+        end = min((i + 1) * fps, len(xs))
+        if start >= end: break
+        
+        window_dirs = raw_directions[start:end]
+        cw_count = np.sum(window_dirs == 1)
+        ccw_count = np.sum(window_dirs == -1)
+        
+        if cw_count > ccw_count:
+            dom_dir = 1
+        elif ccw_count > cw_count:
+            dom_dir = -1
+        else:
+            dom_dir = 0
+            
+        smoothed_directions[start:end] = dom_dir
+
+    # ÚJ SZABÁLY: Csak akkor érvényes az irány, ha a patkány High Active (State == 2)
+    for i in range(len(smoothed_directions)):
+        # Biztonságos indexelés: ha az 'i' nagyobb, mint a states hossza, az utolsó elemet nézi
+        state_idx = min(i, len(states) - 1)
+        if states[state_idx] != 2:
+            smoothed_directions[i] = 0
+
+    # MOST számítjuk az U-Turn-öket és távolságokat a KISIMÍTOTT és SZŰRT adatokból!
     cw_dist, ccw_dist = 0.0, 0.0
     u_turns = 0
-    
-    # Initialize the new dynamic sectors
-    perspective_center, dynamic_sectors = setup_dynamic_sectors(inner_poly, outer_poly)
-    cx, cy = perspective_center
-
-    # Compute raw angles from the perspective center (no phi offset needed anymore)
-    angles_to_center = [(np.degrees(np.arctan2(y - cy, x - cx)) + 360) % 360 for x, y in zip(xs, ys)]
-    
-    sector_counts = np.zeros(8, dtype=int)
-    current_direction = 0 
-    directions_plot = np.zeros(len(xs)-1, dtype=int)
+    last_valid_dir = 0
     
     for i in range(len(xs) - 1):
-        # Use the dynamic sector logic
-        sec_id, is_corner = get_sector_dynamic(xs[i], ys[i], cx, cy, dynamic_sectors)
-        sector_counts[sec_id] += 1
-        
-        if is_corner: corner_time += dt[i]
-
-        angle_diff = normalize_angle_diff(angles_to_center[i+1] - angles_to_center[i])
-        
-        if angle_diff > 0.5: # CW
+        d = smoothed_directions[i]
+        if d == 1:
             cw_dist += distances[i]
-            directions_plot[i] = 1
-            if current_direction == -1: u_turns += 1
-            current_direction = 1
-        elif angle_diff < -0.5: # CCW
+            if last_valid_dir == -1: 
+                u_turns += 1
+            last_valid_dir = 1
+        elif d == -1:
             ccw_dist += distances[i]
-            directions_plot[i] = -1
-            if current_direction == 1: u_turns += 1
-            current_direction = -1
+            if last_valid_dir == 1: 
+                u_turns += 1
+            last_valid_dir = -1
 
-    corner_ratio = (corner_time / total_time) * 100.0 if total_time > 0 else 0.0
     dir_asymmetry = abs(cw_dist - ccw_dist) / (cw_dist + ccw_dist) if (cw_dist + ccw_dist) > 0 else 0.0
 
+    # --- 8. SPATIAL ANALYSIS (Corners vs Corridors) ---
+    corner_time = 0.0
+    sector_counts = np.zeros(8, dtype=int)
+    corner_flags = np.zeros(len(xs), dtype=int)
+
+    for i in range(len(xs) - 1):
+        pt = (float(xs[i]), float(ys[i]))
+        is_corner = False
+        sec_id = -1
+        
+        for z in zones:
+            if cv2.pointPolygonTest(z["poly"], pt, False) >= 0:
+                sec_id = z["id"]
+                is_corner = z["is_corner"]
+                break
+                
+        if sec_id != -1:
+            sector_counts[sec_id] += 1
+            if is_corner: corner_time += dt[i]
+
+        corner_flags[i] = 1 if is_corner else 0
+
+    corner_ratio = (corner_time / total_time) * 100.0 if total_time > 0 else 0.0
+    
     sector_probs = sector_counts / np.sum(sector_counts)
     sector_probs = sector_probs[sector_probs > 0] 
     spatial_entropy = -np.sum(sector_probs * np.log2(sector_probs))
 
-    # --- 7. MEANDER ---
+    # --- 9. MEANDER ---
     headings = [calculate_angle((xs[i], ys[i]), (xs[i+1], ys[i+1])) for i in range(len(xs)-1)]
     heading_diffs = [abs(normalize_angle_diff(headings[i+1] - headings[i])) for i in range(len(headings)-1)]
     meander = np.sum(heading_diffs) / total_distance if total_distance > 0 else 0.0
 
-    # --- 8. HABITUATION ---
+    # --- 10. HABITUATION ---
     minute_distances = []
     for m in range(5):
         m_start = times[0] + (m * 60.0)
@@ -530,16 +554,15 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     if len(minute_distances) >= 5 and total_distance > 0:
         habituation_index = (minute_distances[0] - minute_distances[4]) / total_distance
 
-    # Save the smoothed states and the angles for the debug csv
+    # Mentés a videós lejátszáshoz (Itt már a SIMÍTOTT irányt és sarkot mentjük!)
     debug_csv_path = output_json_path.replace('.json', '_debug.csv')
     with open(debug_csv_path, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(['Time', 'X', 'Y', 'Speed', 'State', 'Angle_to_Center'])
+        writer.writerow(['Time', 'X', 'Y', 'Speed', 'State', 'Direction', 'Is_Corner'])
         for i in range(len(times)-1):
-            writer.writerow([times[i], xs[i], ys[i], speeds[i], states[i], angles_to_center[i]])
-    print(f"Debug CSV with smoothed 1s states and directions saved to: {debug_csv_path}")
+            writer.writerow([times[i], xs[i], ys[i], speeds[i], states[i], smoothed_directions[i], corner_flags[i]])
 
-    # --- 9. JSON COMPILATION ---
+    # --- 11. JSON COMPILATION ---
     features = {
         "Metadata": {
             "Analyzed_File": os.path.basename(csv_path),
@@ -611,27 +634,27 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
         json.dump(features, f, indent=4, ensure_ascii=False)
     print(f"Success! Features extracted and saved to: {output_json_path}")
 
-    # --- 10. GENERATE DEBUG DASHBOARD ---
+    # --- 12. GENERATE DEBUG DASHBOARD ---
     if debug_html:
-        print("Generating debug dashboard...")
+        print("Generating debug dashboards...")
         html_path = output_json_path.replace('.json', '_debug.html')
         generate_feature_dashboard(
             times, speeds, states, 
-            xs, ys, arena_center, directions_plot, 
+            xs, ys, arena_center, smoothed_directions, 
             minute_distances, html_path
         )
-        # Generate the sector alignment image
+        
         img_path = output_json_path.replace('.json', '_sectors_debug.jpg')
         if video_path is not None:
-            generate_sector_debug_image(config_data, video_path, img_path)
+            generate_zone_debug_image(config_data, video_path, img_path)
 
 
 @click.command()
 @click.argument("csv_path", type=click.Path(exists=True))
-@click.option("--config", default=None, type=click.Path(), help="Path to ROI config JSON file (Auto-detected if not provided)")
+@click.option("--config", default=None, type=click.Path(), help="Path to ROI config JSON file")
 @click.option("--video", default=None, type=click.Path(), help="Path to original video file for generating the sector debug image")
-@click.option("--output", default=None, help="Output JSON filename (Optional)")
-@click.option("--debug", is_flag=True, help="Generate a Plotly HTML dashboard to verify calculations")
+@click.option("--output", default=None, help="Output JSON filename")
+@click.option("--debug", is_flag=True, help="Generate a Plotly HTML dashboard and Sector image")
 def cli(csv_path, config, video, output, debug):
     if not os.path.exists(csv_path):
         click.echo(f"ERROR: CSV file not found: {csv_path}")

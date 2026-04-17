@@ -28,30 +28,16 @@ def find_video_for_csv(csv_path):
     csv_dir = Path(csv_path).resolve().parent
     
     # 2. DECONSTRUCTING THE STRUCTURE (Mirroring)
-    # Typical path of the CSV file: [PROJECT_ROOT]/results/[SUBFOLDERS...]/[VIDEO_NAME]/video_static_trajectory.csv
-    # Typical video path: [PROJECT_ROOT]/data/[SUBFOLDERS...]/video.mp4
-
-    # Locate the "results" folder in the path
     parts = list(csv_dir.parts)
     
     if "results" in parts:
         idx = parts.index("results")
-        
-        # The root of the project is the part before "results"
         project_root = Path(*parts[:idx])
-        
-        # The internal path (subfolders) following "results", but with the last element (which is the video's name) removed
-        # For example, if parts = (..., 'results', 'Experiment_1', 'Video_01')
-        # Then the subfolder is: ('Experiment_1',)
         sub_folders = parts[idx+1 : -1] 
-        
-        # Let's set up the expected original video folder:
-        # [PROJECT_ROOT] / "data" / [SUBFOLDERS...]
         expected_video_dir = project_root / "data" / Path(*sub_folders)
         
         print(f"Expected original video directory: {expected_video_dir}")
         
-        # Let's see if the video exists here with the possible file extensions
         if expected_video_dir.exists():
             for ext in extensions:
                 possible_path = expected_video_dir / (name_without_ext + ext)
@@ -80,41 +66,44 @@ def find_video_for_csv(csv_path):
 def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", video_file=None, speed=1.0, save_video=False):
     """
     Plays the original video and overlays the filtered trajectory with a fading tail.
-    Now visually represents the Behavioral State (Active=Green, Inactive=Red) 
-    and draws the Angle-to-Center vector based on the features_debug.csv file.
+    Visually represents the Behavioral State (Active/Inactive), Spatial Context, 
+    and draws a geometric tangent vector (arrow) showing CW/CCW direction.
     """
     if not os.path.exists(csv_path):
         print(f"ERROR: Trajectory CSV file not found: {csv_path}")
         return
 
-    # --- 1. KERESSÜK MEG A HOZZÁ TARTOZÓ DEBUG CSV-T (Állapotok és Szögek) ---
+    # --- 1. KERESSÜK MEG A HOZZÁ TARTOZÓ DEBUG CSV-T (Állapotok és Irányok) ---
     base_dir = os.path.dirname(csv_path)
     filename_base = os.path.splitext(os.path.basename(csv_path))[0].replace('_trajectory_filtered', '').replace('_trajectory', '')
     
-    # A feature_extractor.py által generált debug fájl neve
     debug_csv_path = os.path.join(base_dir, f"{filename_base}_features_debug.csv")
     
     has_debug_data = False
-    states_dict = {}  # Time -> State (0/1)
-    angles_dict = {}  # Time -> Angle
+    states_dict = {}     
+    directions_dict = {} 
+    corners_dict = {}    
     
     if os.path.exists(debug_csv_path):
         print(f"Found Feature Debug data: {debug_csv_path}")
         has_debug_data = True
         with open(debug_csv_path, 'r') as f:
-            reader = csv.reader(f, delimiter=',') # FIGYELEM: Ha a mentés ","-vel történt! (Átírható ';'-re, ha kell)
-            next(reader, None) # Fejléc átugrása
+            reader = csv.reader(f, delimiter=',') 
+            next(reader, None) 
             for row in reader:
                 try:
-                    t = round(float(row[0]), 3) # Kulcs kerekítése a lebegőpontos hibák elkerülésére
+                    t = round(float(row[0]), 3) 
                     state = int(row[4])
-                    angle = float(row[5])
+                    direction = int(row[5])
+                    is_corner = int(row[6])
+                    
                     states_dict[t] = state
-                    angles_dict[t] = angle
+                    directions_dict[t] = direction
+                    corners_dict[t] = is_corner
                 except (ValueError, IndexError):
                     continue
     else:
-        print(f"WARNING: Feature Debug CSV not found at {debug_csv_path}. States and angles will not be visualized.")
+        print(f"WARNING: Feature Debug CSV not found at {debug_csv_path}. States and directions will not be visualized.")
 
     # --- 2. LOAD TRAJECTORY DATA (A szűrt útvonal) ---
     trajectory = []
@@ -127,11 +116,11 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
                 x = int(row[1])
                 y = int(row[2])
                 
-                # Megnézzük, van-e az adott időponthoz állapotunk a debug dict-ből
                 state = states_dict.get(t, -1) if has_debug_data else -1
-                angle = angles_dict.get(t, 0.0) if has_debug_data else 0.0
+                direction = directions_dict.get(t, 0) if has_debug_data else 0
+                is_corner = corners_dict.get(t, 0) if has_debug_data else 0
                 
-                trajectory.append((t, x, y, state, angle))
+                trajectory.append((t, x, y, state, direction, is_corner))
             except (ValueError, IndexError):
                 continue
 
@@ -145,9 +134,12 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
     xs = np.array([pt[1] for pt in trajectory])
     ys = np.array([pt[2] for pt in trajectory])
     states = np.array([pt[3] for pt in trajectory])
-    angles = np.array([pt[4] for pt in trajectory])
+    directions = np.array([pt[4] for pt in trajectory])
+    corners = np.array([pt[5] for pt in trajectory])
 
-    start_time_sec = times[0]
+    # Kiszámítjuk az aréna durva középpontját a vektorok pontos rajzolásához
+    approx_center_x = np.median(xs)
+    approx_center_y = np.median(ys)
 
     # --- 3. FIND AND OPEN THE VIDEO ---
     if video_file is not None and os.path.exists(video_file):
@@ -242,13 +234,14 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
                 cx = xs[current_csv_idx]
                 cy = ys[current_csv_idx]
                 c_state = states[current_csv_idx]
-                c_angle = angles[current_csv_idx]
+                c_direction = directions[current_csv_idx]
+                c_corner = corners[current_csv_idx]
                 
                 if c_state == 2:
                     cross_color = (0, 255, 0)  # BGR Green
                     state_text = "HIGH ACTIVE"
                 elif c_state == 1:
-                    cross_color = (255, 0, 0)  # BGR Red (Low Active)
+                    cross_color = (255, 0, 0)  # BGR Blue (Low Active)
                     state_text = "LOW ACTIVE"
                 elif c_state == 0:
                     cross_color = (0, 0, 255)  # BGR Red (Inactive)
@@ -264,29 +257,40 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
                 # Draw the Status Text next to the rat
                 cv2.putText(frame, state_text, (cx + 15, cy - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, cross_color, 2)
 
-                # C. IRÁNY-VEKTOR (Angle-to-Center)
-                if has_debug_data:
-                    # Számoljuk ki a vektor végpontját a megadott szög (fok) alapján
-                    # Mivel az Y tengely lefelé nő az OpenCV-ben, sin-nél negatív előjelet használhatunk
-                    # de az np.arctan2 (amit használtál) már elvégezte ezt a logikát.
-                    # Húzunk egy 40 pixeles "mutatót" az aktuális szögre.
-                    vec_len = 40
-                    angle_rad = np.radians(c_angle + 180.0) # +180, hogy a mutató a középpont felé mutasson
+                # B. VECTOR DRAWING (Haladási irány nyíl)
+                if has_debug_data and c_direction != 0:
+                    # Relatív pozíció a középponthoz képest
+                    rx = cx - approx_center_x
+                    ry = cy - approx_center_y
                     
-                    # Az OpenCV koordináta rendszere szerint (jobbra +, lefelé +)
-                    end_x = int(cx + vec_len * np.cos(angle_rad))
-                    end_y = int(cy + vec_len * np.sin(angle_rad))
-                    
-                    cv2.arrowedLine(frame, (cx, cy), (end_x, end_y), (255, 255, 0), 2, tipLength=0.3)
+                    # Matematikai érintő vektorok (OpenCV Y tengely lefelé nő)
+                    if c_direction == 1: # CW (Óramutató járásával megegyező)
+                        tx, ty = -ry, rx
+                    else: # CCW (Óramutató járásával ellentétes)
+                        tx, ty = ry, -rx
+                        
+                    v_len = np.sqrt(tx**2 + ty**2)
+                    if v_len > 0.1:
+                        arrow_len = 50 # A nyíl hossza pixelben
+                        end_x = int(cx + (tx / v_len) * arrow_len)
+                        end_y = int(cy + (ty / v_len) * arrow_len)
+                        
+                        # Narancs a CW, Sárgás/Cián a CCW
+                        arrow_color = (0, 165, 255) if c_direction == 1 else (255, 255, 0)
+                        cv2.arrowedLine(frame, (cx, cy), (end_x, end_y), arrow_color, 4, tipLength=0.3)
 
             elif current_time < times[0]:
                 cv2.putText(frame, f"Waiting for rat insertion... (T={current_time:.2f}s)", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-            # On-Screen Information
+            # On-Screen Information Panel (Top Left)
             cv2.putText(frame, f"Time: {current_time:.2f}s", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             
             speed_text = f"Speed: {speed}x" if speed != 1.0 else "Speed: 1x"
             cv2.putText(frame, speed_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+            if has_debug_data and (current_time >= times[0] and current_time <= times[-1] + 1.0):
+                corner_txt = "CORNER" if c_corner == 1 else "CORRIDOR"
+                cv2.putText(frame, f"Sector: {corner_txt}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)  # Yellow
 
         if paused:
             h, w = frame.shape[:2]
