@@ -174,20 +174,15 @@ def filter_dir_cmd(results_dir, output_dir, median_window, savgol_window, plot, 
     
     click.echo(f"Found {len(csv_files)} CSV files.")
     
-    if output_dir is None:
-        output_dir = root_dir
-    else:
-        output_dir = Path(output_dir).resolve()
-    os.makedirs(output_dir, exist_ok=True)
-    
     for csv_file in sorted(csv_files):
         click.echo(f"\nFiltering: {csv_file.name}")
         video_name = csv_file.parent.name
-        output_path = os.path.join(output_dir, video_name, f"{csv_file.stem}_filtered.csv")
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        base_dir = os.path.dirname(str(csv_file))
+        output_path = os.path.join(base_dir, f"{csv_file.stem}_filtered.csv")
+        aligned_config = os.path.join(base_dir, f"{video_name}_config.json")
         process_trajectory(
             str(csv_file),
-            config_path=config,
+            config_path=aligned_config,
             output_path=output_path,
             median_window=median_window,
             savgol_window=savgol_window,
