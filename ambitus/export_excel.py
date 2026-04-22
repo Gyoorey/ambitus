@@ -12,18 +12,18 @@ except ImportError:
 
 def flatten_dict_smart(d, parent_key=''):
     """
-    Rekurzívan kilapítja a JSON dictionary-t.
-    ÚJ LOGIKA: Csak a 'Minute_X' és 'Metadata' csoportok nevét tartja meg előtagként,
-    mivel ezekben a kulcsok ismétlődnek. A többi főcsoport (I_..., II_...) nevét teljesen eldobja.
+    Recursively flattens the JSON dictionary.
+    NEW LOGIC: Only keeps the names of 'Minute_X' and 'Metadata' groups as prefixes,
+    since keys repeat within these. Completely discards the names of other main groups (I_..., II_...).
     """
     items = []
     for k, v in d.items():
         if isinstance(v, dict):
-            # Csak a percek és a metaadatok kapnak prefixet
+            # Only minutes and metadata get a prefix
             if k.startswith("Minute_") or k == "Metadata":
                 new_parent = f"{k}_"
             else:
-                new_parent = "" # Eldobjuk a kategória nevét
+                new_parent = ""  # Discard the category name
                 
             items.extend(flatten_dict_smart(v, new_parent).items())
         else:
@@ -38,7 +38,7 @@ def export_features_to_excel(results_dir, create_folder_excels=False):
         print(f"ERROR: Results directory not found: {root_dir}")
         return
 
-    # Összes feature JSON megkeresése
+    # Find all feature JSON files
     json_files = list(root_dir.rglob('*_features.json'))
     
     if not json_files:
@@ -57,10 +57,10 @@ def export_features_to_excel(results_dir, create_folder_excels=False):
                 print(f"WARNING: Could not parse JSON in file {jpath.name}")
                 continue
         
-        # Tisztított, okos kilapítás
+        # Clean, smart flattening
         flat_data = flatten_dict_smart(data)
         
-        # Mappa infók kinyerése
+        # Extract folder information
         rel_path = jpath.relative_to(root_dir)
         parent_dir = rel_path.parent
         
@@ -70,34 +70,34 @@ def export_features_to_excel(results_dir, create_folder_excels=False):
         flat_data['Group_Folder'] = group_folder
         flat_data['Video_Folder'] = video_folder
         
-        # Elmentjük az eredeti fájl útvonalát
+        # Store the original file path
         flat_data['__Source_Dir'] = str(jpath.parent)
         
         all_data.append(flat_data)
 
     df = pd.DataFrame(all_data)
 
-    # Oszlopok sorrendjének beállítása
+    # Set column order
     cols = df.columns.tolist()
     front_cols = ['Group_Folder', 'Video_Folder', 'Metadata_Analyzed_File']
     existing_front_cols = [c for c in front_cols if c in cols]
     
-    # Kiszűrjük a segédoszlopokat és a már előre rakott oszlopokat
+    # Filter out helper columns and already positioned columns
     rest_cols = [c for c in cols if c not in existing_front_cols and c != '__Source_Dir']
     
-    # A végleges megjelenítendő oszloplista
+    # Final display column list
     export_cols = existing_front_cols + rest_cols
     
-    # --- 1. MASTER EXCEL LÉTREHOZÁSA ---
+    # --- 1. CREATE MASTER EXCEL ---
     master_out = root_dir / "Ambitus_Master_Features.xlsx"
     df[export_cols].to_excel(master_out, index=False)
     print(f"SUCCESS: Master Excel saved to {master_out}")
 
-    # --- 2. MINDEN MAPPA ÉS ALMAPPA EXCEL LÉTREHOZÁSA (Opcionális) ---
+    # --- 2. CREATE EXCEL FOR EVERY FOLDER AND SUBFOLDER (Optional) ---
     if create_folder_excels:
         print("\nCreating individual folder Excels...")
         
-        # A) ALMAPPA (Csoport) ÖSSZESÍTŐK
+        # A) GROUP (Subfolder) SUMMARIES
         for group, sub_df in df.groupby('Group_Folder'):
             if group == 'Root':
                 continue 
@@ -111,7 +111,7 @@ def export_features_to_excel(results_dir, create_folder_excels=False):
             sub_df[export_cols].to_excel(out_path, index=False)
             print(f"  - Group Summary: {out_path}")
             
-        # B) EGYEDI VIDEÓ MAPPA EXCELEK
+        # B) INDIVIDUAL VIDEO FOLDER EXCELS
         for _, row in df.iterrows():
             out_dir = Path(row['__Source_Dir'])
             video_name = row['Video_Folder']
