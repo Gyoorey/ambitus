@@ -26,6 +26,8 @@ dependencies = [
     "scikit-image",
     "plotly",
     "imageio[ffmpeg]",
+    "pandas",
+    "openpyxl"
 ]
 
 [project.scripts]

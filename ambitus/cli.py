@@ -11,6 +11,7 @@ from playback_filtered import play_filtered_trajectory
 from feature_extractor import extract_features
 from threshold_calibrator import calibrate_global_thresholds
 from activity import classify_activities
+from export_excel import export_features_to_excel
 import os
 from pathlib import Path
 
@@ -481,3 +482,13 @@ def extract_dir_cmd(results_dir, force, debug):
             
     click.echo(f"\n========================================")
     click.echo(f"Extraction complete! Successfully processed {success_count}/{len(csv_files)} files.")
+
+@cli.command(name="export")
+@click.argument("results_dir", type=click.Path(exists=True))
+@click.option("--all-excels", is_flag=True, help="Create separate Excel files for EVERY subfolder and individual video folder.")
+def export_excel_cmd(results_dir, all_excels):
+    """
+    Aggregates all extracted feature JSON files into Excel spreadsheets.
+    Automatically creates a Master Excel file in the root of the results directory.
+    """
+    export_features_to_excel(results_dir, create_folder_excels=all_excels)
