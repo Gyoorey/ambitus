@@ -295,7 +295,7 @@ def process_trajectory(csv_path, config_path=None, output_path=None, median_wind
     print(f"Loaded {len(times)} raw data points.")
 
     # --- 2. FIND INSERTION POINT AND CROP TO 5 MINUTES ---
-    t_start = detect_insertion_time(times, xs, ys) + 5.0 # Add 5 seconds buffer to ensure we start after the rat is fully placed
+    t_start = detect_insertion_time(times, xs, ys) + 2.0 # Add 2 seconds buffer to ensure we start after the rat is fully placed
     t_end = t_start + 300.0   # Exactly 5 minutes (300 seconds)
     # Filter arrays to keep only the valid 5-minute window
     valid_time_mask = (times >= t_start) & (times <= t_end)

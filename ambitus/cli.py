@@ -265,6 +265,9 @@ def run_pipeline(video_path, base_image, base_config, method, min_area, skip_sec
     features_json = os.path.join(result_dir, f"{video_name}_{method}_features.json")
     extract_features(classified_csv, aligned_config, features_json, debug_html=debug, video_path=video_path)
 
+    click.echo("Step 7: Exporting features to Excel...")
+    export_features_to_excel(result_dir, create_folder_excels=False)
+
     click.echo(f"Pipeline complete! Results saved to {result_dir}")
 
 @cli.command(name="run_dir")
