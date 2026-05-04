@@ -12,6 +12,7 @@ from feature_extractor import extract_features
 from threshold_calibrator import calibrate_global_thresholds
 from activity import classify_activities
 from export_excel import export_features_to_excel
+from check_results import audit_results
 import os
 from pathlib import Path
 
@@ -63,12 +64,14 @@ def load_video(video_path, show):
 @click.option("--skip-seconds", default=0.0, help="Seconds to skip at the start")
 @click.option("--min-area", default=100, help="Minimum area")
 @click.option("--method", type=click.Choice(['simple', 'static'], case_sensitive=False), default='static', help="Tracking method: simple (MOG2) or static (Masked Running Average).")
-def analyze(path, config, show, debug, skip_seconds, min_area, method):
+@click.option("--bg-method", type=click.Choice(['quiet', 'global'], case_sensitive=False), default='quiet', help="Background generation method for static tracker (quiet = 5s stable window, global = median of entire video).")
+def analyze(path, config, show, debug, skip_seconds, min_area, method, bg_method):
     """ Process video using the optimized, clean tracking methods. """
     track(
         video_path=path,
         config_file=config,
         method=method,
+        bg_method=bg_method,
         show_traj=show,
         debug=debug,
         skip_seconds=skip_seconds,
@@ -219,6 +222,7 @@ def filter_dir_cmd(results_dir, output_dir, median_window, savgol_window, plot, 
 @click.option("--base-image", default="base_reference.jpg", type=click.Path(exists=True), help="The original reference image")
 @click.option("--base-config", default="arena_config_poly.json", help="The original ROI JSON file")
 @click.option("--method", type=click.Choice(['simple', 'static'], case_sensitive=False), default='static', help="Tracking method")
+@click.option("--bg-method", type=click.Choice(['quiet', 'global'], case_sensitive=False), default='quiet', help="Background generation method for static tracker")
 @click.option("--min-area", default=100, help="Minimum area")
 @click.option("--skip-seconds", default=0.0, help="Seconds to skip at the start")
 @click.option("--median-window", default=5, help="Window size for outlier removal")
@@ -228,7 +232,8 @@ def filter_dir_cmd(results_dir, output_dir, median_window, savgol_window, plot, 
 @click.option("--show", is_flag=True, help="Display results")
 @click.option("--debug", is_flag=True, help="Show debug views")
 @click.option("--out-dir", default=None, help="Output directory override")
-def run_pipeline(video_path, base_image, base_config, method, min_area, skip_seconds, median_window, savgol_window, sigma, alpha, show, debug, out_dir):
+@click.option("--export", is_flag=True, help="Update Master Excel and specific folder Excels after running")
+def run_pipeline(video_path, base_image, base_config, method, bg_method, min_area, skip_seconds, median_window, savgol_window, sigma, alpha, show, debug, out_dir, export):
     """Run the complete pipeline: align ROI, track, filter, and generate heatmap."""
 
     # Example: ambitus run data/LE_17_1_45.mp4 --method static --show --debug
@@ -236,10 +241,23 @@ def run_pipeline(video_path, base_image, base_config, method, min_area, skip_sec
     
     v_path = Path(video_path).resolve()
     video_name = v_path.stem
+    results_root = None 
+
     if out_dir is None:
-        result_dir = str(v_path.parent.parent / "results" / video_name)
+        parts = list(v_path.parts)
+        if "data" in parts:
+            idx = parts.index("data")
+            project_root = Path(*parts[:idx])
+            results_root = project_root / "results"
+            sub_folders = parts[idx+1 : -1]
+            result_dir = str(results_root / Path(*sub_folders) / video_name)
+        else:
+            results_root = v_path.parent / "results"
+            result_dir = str(results_root / video_name)
     else:
         result_dir = out_dir
+        results_root = Path(out_dir).parent.parent
+
     os.makedirs(result_dir, exist_ok=True)
     aligned_config = os.path.join(result_dir, f"{video_name}_config.json")
     csv_file = os.path.join(result_dir, f"{video_name}_{method}_trajectory.csv")
@@ -249,7 +267,7 @@ def run_pipeline(video_path, base_image, base_config, method, min_area, skip_sec
     align_video_roi(video_path, base_image, base_config, debug, output_dir=result_dir)
     
     click.echo("Step 2: Tracking...")
-    track(video_path, aligned_config, method, show, debug, skip_seconds, min_area, output_dir=result_dir)
+    track(video_path, aligned_config, method, bg_method, show, debug, skip_seconds, min_area, output_dir=result_dir)
     
     click.echo("Step 3: Filtering trajectory...")
     process_trajectory(csv_file, aligned_config, None, median_window, savgol_window, show, True)
@@ -265,6 +283,18 @@ def run_pipeline(video_path, base_image, base_config, method, min_area, skip_sec
     features_json = os.path.join(result_dir, f"{video_name}_{method}_features.json")
     extract_features(classified_csv, aligned_config, features_json, debug_html=debug, video_path=video_path)
 
+    if export and results_root and results_root.exists():
+        click.echo("Step 7: Updating Excel files for this run...")
+        
+        target_grp = Path(result_dir).parent.name
+        
+        export_features_to_excel(
+            str(results_root), 
+            create_folder_excels=False, 
+            target_video=video_name, 
+            target_group=target_grp
+        )
+
     click.echo(f"Pipeline complete! Results saved to {result_dir}")
 
 @cli.command(name="run_dir")
@@ -272,6 +302,7 @@ def run_pipeline(video_path, base_image, base_config, method, min_area, skip_sec
 @click.option("--base-image", default="base_reference.jpg", type=click.Path(exists=True), help="The original reference image")
 @click.option("--base-config", default="arena_config_poly.json", help="The original ROI JSON file")
 @click.option("--method", type=click.Choice(['simple', 'static'], case_sensitive=False), default='static', help="Tracking method")
+@click.option("--bg-method", type=click.Choice(['quiet', 'global'], case_sensitive=False), default='quiet', help="Background generation method for static tracker")
 @click.option("--min-area", default=100, help="Minimum area")
 @click.option("--skip-seconds", default=0.0, help="Seconds to skip at the start")
 @click.option("--median-window", default=5, help="Window size for outlier removal")
@@ -280,7 +311,7 @@ def run_pipeline(video_path, base_image, base_config, method, min_area, skip_sec
 @click.option("--alpha", default=0.6, help="Transparency level for heatmap")
 @click.option("--show", is_flag=True, help="Display results")
 @click.option("--debug", is_flag=True, help="Show debug views")
-def run_dir_pipeline(video_dir, base_image, base_config, method, min_area, skip_seconds, median_window, savgol_window, sigma, alpha, show, debug):
+def run_dir_pipeline(video_dir, base_image, base_config, method, bg_method, min_area, skip_seconds, median_window, savgol_window, sigma, alpha, show, debug):
     """Run the complete pipeline on all videos in a directory."""
 
 
@@ -302,7 +333,7 @@ def run_dir_pipeline(video_dir, base_image, base_config, method, min_area, skip_
         click.echo(f"\nProcessing: {video_path.name}")
         rel_path = video_path.parent.relative_to(root_data_dir)
         target_result_dir = str(results_root_dir / rel_path / video_path.stem)
-        run_pipeline.callback(str(video_path), base_image, base_config, method, min_area, skip_seconds,
+        run_pipeline.callback(str(video_path), base_image, base_config, method, bg_method, min_area, skip_seconds,
                                median_window, savgol_window, sigma, alpha, show, debug, target_result_dir)
         
     # export to Excel after processing all videos
@@ -496,3 +527,13 @@ def export_excel_cmd(results_dir, all_excels):
     Automatically creates a Master Excel file in the root of the results directory.
     """
     export_features_to_excel(results_dir, create_folder_excels=all_excels)
+
+@cli.command(name="check")
+@click.argument("results_dir", type=click.Path(exists=True))
+@click.option("--output", default="Problematic_Videos_Report.txt", help="Name of the output text report file.")
+def audit_cmd(results_dir, output):
+    """
+    Scans processed results for problematic videos (escapes, short videos, tracking errors).
+    Generates a text report.
+    """
+    audit_results(results_dir, output_filename=output)

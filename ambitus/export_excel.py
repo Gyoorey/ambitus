@@ -31,7 +31,7 @@ def flatten_dict_smart(d, parent_key=''):
             items.append((final_key, v))
     return dict(items)
 
-def export_features_to_excel(results_dir, create_folder_excels=False):
+def export_features_to_excel(results_dir, create_folder_excels=False, target_video=None, target_group=None):
     root_dir = Path(results_dir).resolve()
     
     if not root_dir.exists():
@@ -88,19 +88,23 @@ def export_features_to_excel(results_dir, create_folder_excels=False):
     # Final display column list
     export_cols = existing_front_cols + rest_cols
     
-    # --- 1. CREATE MASTER EXCEL ---
+    # --- 1. ALWAYS UPDATE MASTER EXCEL ---
     master_out = root_dir / "Ambitus_Master_Features.xlsx"
     df[export_cols].to_excel(master_out, index=False)
-    print(f"SUCCESS: Master Excel saved to {master_out}")
+    print(f"SUCCESS: Master Excel saved/updated at {master_out}")
 
-    # --- 2. CREATE EXCEL FOR EVERY FOLDER AND SUBFOLDER (Optional) ---
-    if create_folder_excels:
-        print("\nCreating individual folder Excels...")
-        
+    # --- 2. TARGETED OR FULL EXCEL GENERATION ---
+    if create_folder_excels or target_video:
+        print("\nCreating/Updating individual folder Excels...")
+
         # A) GROUP (Subfolder) SUMMARIES
         for group, sub_df in df.groupby('Group_Folder'):
             if group == 'Root':
                 continue 
+            
+            # Strict filtering: Must match target_group if provided
+            if not create_folder_excels and target_group and group != target_group:
+                continue
                 
             out_dir = root_dir / group
             safe_group_name = str(Path(group).name).replace('/', '_').replace('\\', '_')
@@ -109,19 +113,33 @@ def export_features_to_excel(results_dir, create_folder_excels=False):
             
             os.makedirs(out_dir, exist_ok=True)
             sub_df[export_cols].to_excel(out_path, index=False)
-            print(f"  - Group Summary: {out_path}")
+            if target_group:
+                print(f"  - Updated specific Group Summary: {out_path}")
+            else:
+                print(f"  - Group Summary: {out_path}")
             
         # B) INDIVIDUAL VIDEO FOLDER EXCELS
         for _, row in df.iterrows():
-            out_dir = Path(row['__Source_Dir'])
             video_name = row['Video_Folder']
+            group_name = row['Group_Folder']
+            
+            # Strict filtering: Must match BOTH video name and group name
+            if not create_folder_excels:
+                if target_video and video_name != target_video:
+                    continue
+                if target_group and group_name != target_group:
+                    continue
+                
+            out_dir = Path(row['__Source_Dir'])
             file_name = f"{video_name}_features.xlsx"
             out_path = out_dir / file_name
             
             single_row_df = pd.DataFrame([row[export_cols]])
             single_row_df.to_excel(out_path, index=False)
+            if target_video:
+                print(f"  - Updated specific Video Excel: {out_path}")
 
-        print(f"Finished creating individual folder Excel files.")
+        print(f"Finished updating folder Excel files.")
 
 @click.command()
 @click.argument("results_dir", type=click.Path(exists=True))

@@ -131,6 +131,56 @@ def get_robust_center(fgmask):
 
     return (x_median, y_median), (x_dev, y_dev)
 
+def generate_global_median_background(video_path, is_mpg, reader, cap, fps, total_frames, sample_count=100):
+    """
+    Extracts a clean background from the entire video by taking evenly distributed samples
+    and calculating the global pixel-wise median. Removes sticks, hands, and the moving rat.
+    """
+    print(f"Generating GLOBAL median background from {sample_count} samples across the entire video...")
+    frames = []
+    
+    if total_frames <= 0:
+        if is_mpg:
+            total_frames = reader.count_frames()
+        else:
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+    step = max(1, total_frames // sample_count)
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
+    
+    for i in range(0, total_frames, step):
+        if is_mpg:
+            try:
+                reader.set_image_index(i)
+                frame = reader.get_next_data()
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                ret = True
+            except:
+                ret = False
+        else:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+            ret, frame = cap.read()
+            
+        if ret:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = clahe.apply(gray)
+            gray_blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+            frames.append(gray_blurred)
+            
+        if len(frames) >= sample_count:
+            break
+            
+    if not frames:
+        print("ERROR: Failed to extract frames for global median background!")
+        return None
+        
+    print("Calculating pixel-wise median (this might take a few seconds)...")
+    median_bg = np.median(frames, axis=0).astype(np.float32)
+    print("Global median background generation complete.")
+    
+    return median_bg
+
+
 # ==============================================================================
 # BACKGROUND GENERATION (Quiet Window Detection)
 # ==============================================================================
@@ -331,7 +381,7 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
     return np.hstack([frame, right_sidebar])
 
 # --- MAIN TRACKING LOGIC ---
-def track(video_path, config_file="arena_config_poly.json", method='simple', show_traj=False, debug=False, skip_seconds=0.0, min_area=200, output_dir=None):
+def track(video_path, config_file="arena_config_poly.json", method='static', bg_method='quiet', show_traj=False, debug=False, skip_seconds=0.0, min_area=200, output_dir=None):
     config = load_config(config_file)
     if config is None: return
 
@@ -389,21 +439,38 @@ def track(video_path, config_file="arena_config_poly.json", method='simple', sho
         rat_mask_for_bg_update = None
         
     elif method == 'static':
-        print("Starting: Static (Selective Averaging) method")
+        print(f"Starting: Static (Selective Averaging) method. Background strategy: {bg_method.upper()}")
         tracker = RatTracker("Static Diff")
 
-        quiet_start_frame = find_quiet_window(
-            video_path, is_mpg,
-            reader if is_mpg else None,
-            cap if not is_mpg else None,
-            fps)
+        if bg_method == 'global':
+            running_avg_bg = generate_global_median_background(
+                video_path, is_mpg, 
+                reader if is_mpg else None, 
+                cap if not is_mpg else None, 
+                fps, total_frames, sample_count=150
+            )
+        else:
+            quiet_start_frame = find_quiet_window(
+                video_path, is_mpg,
+                reader if is_mpg else None,
+                cap if not is_mpg else None,
+                fps,
+                search_seconds=45.0 
+            )
 
-        running_avg_bg = generate_median_background(
-            video_path, is_mpg, 
-            reader if is_mpg else None, 
-            cap if not is_mpg else None, 
-            quiet_start_frame, fps
-        )
+            running_avg_bg = generate_median_background(
+                video_path, is_mpg, 
+                reader if is_mpg else None, 
+                cap if not is_mpg else None, 
+                quiet_start_frame, fps
+            )
+        
+        if running_avg_bg is not None:
+            video_filename = os.path.splitext(os.path.basename(video_path))[0]
+            bg_debug_dir = output_dir if output_dir is not None else os.path.join("results", video_filename)
+            os.makedirs(bg_debug_dir, exist_ok=True)
+            cv2.imwrite(os.path.join(bg_debug_dir, f"{video_filename}_DEBUG_BACKGROUND.jpg"), running_avg_bg)
+
         if running_avg_bg is None:
             gray_first = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
             gray_first = clahe.apply(gray_first)

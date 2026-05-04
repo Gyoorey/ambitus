@@ -311,6 +311,63 @@ def process_trajectory(csv_path, config_path=None, output_path=None, median_wind
         print("ERROR: Not enough data left after cropping. Aborting.")
         return
 
+    # --- 2.5 TELEPORTATION & SPIKE REMOVAL (PRE-FILTERING) ---
+    # Actively remove transient tracking errors before interpolation.
+    # If a point requires impossible speed or jumps across a wall quickly, it is deleted.
+    valid_mask = np.ones(len(times), dtype=bool)
+    last_valid_idx = 0
+    spikes_removed = 0
+
+    for i in range(1, len(times)):
+        t_prev = times[last_valid_idx]
+        x_prev, y_prev = xs[last_valid_idx], ys[last_valid_idx]
+        
+        t_curr = times[i]
+        x_curr, y_curr = xs[i], ys[i]
+        
+        dt = t_curr - t_prev
+        dist = np.sqrt((x_curr - x_prev)**2 + (y_curr - y_prev)**2)
+        speed = dist / dt if dt > 0 else 0
+        
+        is_spike = False
+        
+        # Rule 1: Impossible Speed (e.g., > 250 px/s is a tracking spike/teleportation)
+        if speed > 250.0:
+            is_spike = True
+            
+        # Rule 2: STRICT Geometric Wall Crossing
+        # If the direct line between the last valid point and the current point 
+        # crosses the inner "forbidden" wall, it is physically impossible. 
+        # We only check this if the jump is relatively large (> 40px) to save computation
+        # and prevent micro-jitter near the wall from triggering false positives.
+        elif dist > 40.0 and dt < 1.0:
+            if not is_path_valid((x_prev, y_prev), (x_curr, y_curr), inner_poly):
+                is_spike = True
+                
+        if is_spike:
+            valid_mask[i] = False
+            spikes_removed += 1
+            # Do NOT update last_valid_idx. The next point will be checked against the last GOOD point.
+            
+            # Reset mechanism: If the "spike" lasts too long (> 2 seconds), 
+            # maybe the last_valid_idx was the actual error. Force a reset.
+            if dt > 2.0:
+                last_valid_idx = i
+        else:
+            last_valid_idx = i
+
+    if spikes_removed > 0:
+        print(f"Removed {spikes_removed} teleportation spike points from raw data.")
+
+    # Apply the mask to drop the bad points completely
+    times = times[valid_mask]
+    xs = xs[valid_mask]
+    ys = ys[valid_mask]
+
+    if len(times) < 10:
+        print("ERROR: Not enough data left after spike removal. Aborting.")
+        return
+
     # --- 3. SMART INTERPOLATION ---
     time_diffs = np.diff(times)
     if len(time_diffs) == 0: return
@@ -424,14 +481,15 @@ def process_trajectory(csv_path, config_path=None, output_path=None, median_wind
             f.write(f"--------------------------------------\n")
             f.write(f"Valid tracking window start: {round(t_start, 2)}s\n")
             f.write(f"Valid tracking window end:   {round(t_end, 2)}s\n")
-            f.write(f"Physically impossible jumps rejected: {invalid_jumps}\n")
+            f.write(f"Teleportation spikes removed: {spikes_removed}\n")
+            f.write(f"Physically impossible gaps rejected: {invalid_jumps}\n")
             
             if invalid_jumps > 0:
-                f.write("Rejected jump time windows (sec):\n")
+                f.write("Rejected long gap time windows (sec):\n")
                 for jump in invalid_jump_times:
                     f.write(f"  - from {round(jump[0], 2):>6}s  to  {round(jump[1], 2):>6}s\n")
                     
-        print(f"Updated statistics file with detailed jump times: {stats_file}")
+        print(f"Updated statistics file with detailed jump and spike times: {stats_file}")
     else:
         print(f"WARNING: Could not find statistics file to update ({stats_file})")
 
