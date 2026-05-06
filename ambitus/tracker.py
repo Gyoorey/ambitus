@@ -407,9 +407,13 @@ def track(video_path, config_file="arena_config_poly.json", method='static', bg_
             
         start_frame = int(skip_seconds * fps)
         
+        # SEQUENTIAL SKIP FOR 100% ACCURACY (Keyframe desync prevention)
+        print(f"Synchronizing video stream to {skip_seconds}s (Frame {start_frame})...")
         try:
-            if start_frame > 0:
-                reader.set_image_index(start_frame)
+            reader.set_image_index(0)
+            for _ in range(start_frame): 
+                reader.get_next_data()
+                
             first_frame = reader.get_next_data()
             first_frame = cv2.cvtColor(first_frame, cv2.COLOR_RGB2BGR)
             ret = True
@@ -421,7 +425,11 @@ def track(video_path, config_file="arena_config_poly.json", method='static', bg_
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         start_frame = int(skip_seconds * fps)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+         # SEQUENTIAL SKIP FOR 100% ACCURACY
+        print(f"Synchronizing video stream to {skip_seconds}s (Frame {start_frame})...")
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        for _ in range(start_frame): 
+            cap.read()
         ret, first_frame = cap.read()
 
     if not ret: return
@@ -478,13 +486,18 @@ def track(video_path, config_file="arena_config_poly.json", method='static', bg_
             running_avg_bg = np.float32(gray_first)
 
         rat_mask_for_bg_update = np.zeros_like(running_avg_bg, dtype=np.uint8)
+        print("Rewinding and synchronizing video stream for tracking...")
         if is_mpg:
-                try:
-                    reader.set_image_index(start_frame)
-                except:
-                    print("WARNING: Failed to set start frame for MPG. Starting from the beginning.")
+            try:
+                reader.set_image_index(0)
+                for _ in range(start_frame): 
+                    reader.get_next_data()
+            except:
+                print("WARNING: Failed to rewind MPG accurately.")
         else:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            for _ in range(start_frame): 
+                cap.read()
 
     trajectory_data = []
     frame_counter = start_frame

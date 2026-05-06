@@ -295,7 +295,17 @@ def process_trajectory(csv_path, config_path=None, output_path=None, median_wind
     print(f"Loaded {len(times)} raw data points.")
 
     # --- 2. FIND INSERTION POINT AND CROP TO 5 MINUTES ---
-    t_start = detect_insertion_time(times, xs, ys) + 2.0 # Add 2 seconds buffer to ensure we start after the rat is fully placed
+    
+    # Smart Detection: If the user used '--skip-seconds', the CSV will not start at 0.0s.
+    # In this case, we completely BYPASS the automatic insertion detection and trust the manual cut.
+    if times[0] > 1.0:
+        t_start = times[0]
+        print(f"Manual skip detected (CSV starts at {round(t_start, 2)}s). Bypassing automatic insertion detection.")
+    else:
+        t_insertion = detect_insertion_time(times, xs, ys)
+        t_start = t_insertion + 2.0
+        print(f"Rat insertion detected at T={round(t_insertion, 2)}s. Added 2.0s buffer.")
+
     t_end = t_start + 300.0   # Exactly 5 minutes (300 seconds)
     # Filter arrays to keep only the valid 5-minute window
     valid_time_mask = (times >= t_start) & (times <= t_end)
@@ -331,8 +341,9 @@ def process_trajectory(csv_path, config_path=None, output_path=None, median_wind
         
         is_spike = False
         
-        # Rule 1: Impossible Speed (e.g., > 250 px/s is a tracking spike/teleportation)
-        if speed > 250.0:
+        # Rule 1: Impossible Speed (e.g., > 1000 px/s is a tracking spike/teleportation)
+        if speed > 1000.0:
+            print(t_curr, x_curr, y_curr, "is a spike candidate with speed:", round(speed, 2), "px/s")
             is_spike = True
             
         # Rule 2: STRICT Geometric Wall Crossing
