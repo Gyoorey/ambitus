@@ -324,47 +324,54 @@ def process_trajectory(csv_path, config_path=None, output_path=None, median_wind
     # --- 2.5 TELEPORTATION & SPIKE REMOVAL (PRE-FILTERING) ---
     # Actively remove transient tracking errors before interpolation.
     # If a point requires impossible speed or jumps across a wall quickly, it is deleted.
+    
+    MAX_SPEED_PX_S = 1000.0  # Maximum acceptable rat speed in pixels per second
+    MIN_TRACKING_GAP_S = 0.5 # If the tracker loses the rat for at least half a second, accept the next point as a new anchor
+
     valid_mask = np.ones(len(times), dtype=bool)
     last_valid_idx = 0
     spikes_removed = 0
 
-    for i in range(1, len(times)):
-        t_prev = times[last_valid_idx]
-        x_prev, y_prev = xs[last_valid_idx], ys[last_valid_idx]
-        
+    for i in range(1, len(times)):    
         t_curr = times[i]
         x_curr, y_curr = xs[i], ys[i]
+
+        raw_dt = t_curr - times[i-1]
+
+        if raw_dt > MIN_TRACKING_GAP_S:
+            # The tracker "went blind" for a while. Since we don't know where the rat traveled,
+            # we must blindly accept the first new point as the new anchor point,
+            # lest we filter out the real rat after it navigates around a corner!
+            last_valid_idx = i
+            continue
         
-        dt = t_curr - t_prev
-        dist = np.sqrt((x_curr - x_prev)**2 + (y_curr - y_prev)**2)
+        # 2. If tracking was continuous, compare against the last GOOD point (anchor)
+        t_anchor = times[last_valid_idx]
+        x_anchor, y_anchor = xs[last_valid_idx], ys[last_valid_idx]
+        
+        dt = t_curr - t_anchor
+        dist = np.sqrt((x_curr - x_anchor)**2 + (y_curr - y_anchor)**2)
         speed = dist / dt if dt > 0 else 0
         
         is_spike = False
         
-        # Rule 1: Impossible Speed (e.g., > 1000 px/s is a tracking spike/teleportation)
-        if speed > 1000.0:
-            print(t_curr, x_curr, y_curr, "is a spike candidate with speed:", round(speed, 2), "px/s")
+        # RULE 1: Impossible speed (teleportation within the same corridor)
+        if speed > MAX_SPEED_PX_S:
             is_spike = True
             
-        # Rule 2: STRICT Geometric Wall Crossing
-        # If the direct line between the last valid point and the current point 
-        # crosses the inner "forbidden" wall, it is physically impossible. 
-        # We only check this if the jump is relatively large (> 40px) to save computation
-        # and prevent micro-jitter near the wall from triggering false positives.
-        elif dist > 40.0 and dt < 1.0:
-            if not is_path_valid((x_prev, y_prev), (x_curr, y_curr), inner_poly):
+        # RULE 2: Jump through wall (teleportation between corridors)
+        # Since we know from raw_dt that there was NO measurement gap, it is physically impossible
+        # for the rat to be on the other side of the wall. We delete it mercilessly.
+        elif dist > 40.0:
+            if not is_path_valid((x_anchor, y_anchor), (x_curr, y_curr), inner_poly):
                 is_spike = True
                 
         if is_spike:
             valid_mask[i] = False
             spikes_removed += 1
-            # Do NOT update last_valid_idx. The next point will be checked against the last GOOD point.
-            
-            # Reset mechanism: If the "spike" lasts too long (> 2 seconds), 
-            # maybe the last_valid_idx was the actual error. Force a reset.
-            if dt > 2.0:
-                last_valid_idx = i
+            # The anchor point does NOT get updated! We compare the next point against the old, good anchor too.
         else:
+            # This was valid movement, update the anchor
             last_valid_idx = i
 
     if spikes_removed > 0:
