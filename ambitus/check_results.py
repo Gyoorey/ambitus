@@ -7,17 +7,19 @@ from pathlib import Path
 MIN_EVALUATED_TIME_S = 280.0       # Minimum valid time (seconds) to be considered a full video
 MAX_ALLOWED_JUMPS = 5              # Max allowed physically impossible jumps before flagging
 MAX_MISSED_FRAMES_RATIO = 0.15     # If missed frames > 15% of total frames, flag as escaped/lost
+EARLY_START_THRESHOLD_S = 20.0     # If tracking starts before this time, flag as possible false-start artifact
 
 def parse_statistics_file(stat_path):
     """ 
-    Parses the _statistics.txt file to extract missed frames and jump counts. 
+    Parses the _statistics.txt file to extract missed frames, jump counts, and window start times. 
     Supports both legacy and new tracking log formats.
     """
     stats = {
         "Total_Frames": 0,
         "Missed_Frames": 0,
-        "Impossible_Jumps": 0,  # Combined value for old and new jumps/gaps
-        "Spikes_Removed": 0     # New feature
+        "Impossible_Jumps": 0,  
+        "Spikes_Removed": 0,     
+        "Window_Start": None     # New feature for early start detection
     }
     
     if not os.path.exists(stat_path):
@@ -35,14 +37,22 @@ def parse_statistics_file(stat_path):
                 except: pass
                 
             # Legacy and New Filter Stats
-            elif line.startswith("Physically impossible jumps rejected:"): # Old format
+            elif line.startswith("Physically impossible jumps rejected:"): 
                 try: stats["Impossible_Jumps"] += int(line.split(":")[1].strip())
                 except: pass
-            elif line.startswith("Physically impossible gaps rejected:"): # New format
+            elif line.startswith("Physically impossible gaps rejected:"): 
                 try: stats["Impossible_Jumps"] += int(line.split(":")[1].strip())
                 except: pass
-            elif line.startswith("Teleportation spikes removed:"): # New format
+            elif line.startswith("Teleportation spikes removed:"): 
                 try: stats["Spikes_Removed"] = int(line.split(":")[1].strip())
+                except: pass
+                
+            # Window Timing Stats
+            elif line.startswith("Valid tracking window start:"):
+                try: 
+                    # Format: "Valid tracking window start: 30.5s" -> Extracts 30.5
+                    time_str = line.split(":")[1].strip().replace("s", "")
+                    stats["Window_Start"] = float(time_str)
                 except: pass
                 
     return stats
@@ -87,8 +97,7 @@ def audit_results(results_dir, output_filename="Problematic_Videos_Report.txt"):
         except Exception as e:
             issues.append(f"[CORRUPT JSON] Could not read features.json: {e}")
 
-        # 3. Check Statistics TXT for Jumps and Escapes (Missed Frames)
-        # Reconstruct stat file name based on json file name
+        # 3. Check Statistics TXT for Jumps, Escapes, and Early Starts
         base_name = jpath.stem.replace('_features', '')
         stat_path = jpath.parent / f"{base_name}_statistics.txt"
         
@@ -104,6 +113,10 @@ def audit_results(results_dir, output_filename="Problematic_Videos_Report.txt"):
             missed_ratio = stats["Missed_Frames"] / stats["Total_Frames"]
             if missed_ratio > MAX_MISSED_FRAMES_RATIO:
                 issues.append(f"[ESCAPED/LOST] Rat was lost for {round(missed_ratio*100, 1)}% of the video ({stats['Missed_Frames']} missed frames). It likely climbed out of the inner arena.")
+
+        # --- NEW RULE: Early Start Detection ---
+        if stats["Window_Start"] is not None and stats["Window_Start"] < EARLY_START_THRESHOLD_S:
+            issues.append(f"[EARLY START] Analysis started suspiciously early at {stats['Window_Start']}s. (Threshold: {EARLY_START_THRESHOLD_S}s). Possible hand/shadow artifact detected as rat.")
 
         # If issues found, record them
         if issues:
