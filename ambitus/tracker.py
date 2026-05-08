@@ -131,6 +131,56 @@ def get_robust_center(fgmask):
 
     return (x_median, y_median), (x_dev, y_dev)
 
+
+def find_light_on_time(is_mpg, reader, cap, fps, total_frames, search_seconds=120.0):
+    """
+    Scans the last 'search_seconds' of the video to find the exact frame 
+    where the room lights are turned on (massive global intensity spike).
+    """
+    print(f"Searching for light-on event in the last {search_seconds} seconds...")
+    start_search_frame = max(0, int(total_frames - (search_seconds * fps)))
+    
+    # Seek to start of search window
+    if is_mpg:
+        try: reader.set_image_index(start_search_frame)
+        except: pass
+    else:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_search_frame)
+        
+    prev_intensity = None
+    light_on_frame = None
+    
+    for frame_idx in range(start_search_frame, total_frames):
+        if is_mpg:
+            try:
+                frame = reader.get_next_data()
+                ret = True
+            except: ret = False
+        else:
+            ret, frame = cap.read()
+            
+        if not ret: break
+            
+        # Fast processing: grayscale and heavy downscale
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY if is_mpg else cv2.COLOR_BGR2GRAY)
+        small = cv2.resize(gray, (0, 0), fx=0.1, fy=0.1)
+        mean_intensity = np.mean(small)
+        
+        if prev_intensity is not None:
+            # Sudden massive increase in global brightness (Delta > 20 on a 0-255 scale is huge)
+            if (mean_intensity - prev_intensity) > 20.0: 
+                light_on_frame = frame_idx
+                print(f"Light-on event detected at frame {light_on_frame} ({round(light_on_frame/fps, 2)}s).")
+                break
+                
+        prev_intensity = mean_intensity
+        
+    if light_on_frame is not None:
+        return light_on_frame / fps
+    else:
+        print("WARNING: Could not detect light-on event!")
+        return -1
+
 def generate_global_median_background(video_path, is_mpg, reader, cap, fps, total_frames, sample_count=100):
     """
     Extracts a clean background from the entire video by taking evenly distributed samples
@@ -381,7 +431,7 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
     return np.hstack([frame, right_sidebar])
 
 # --- MAIN TRACKING LOGIC ---
-def track(video_path, config_file="arena_config_poly.json", method='static', bg_method='quiet', show_traj=False, debug=False, skip_seconds=0.0, min_area=200, output_dir=None):
+def track(video_path, config_file="arena_config_poly.json", method='static', bg_method='quiet', backtrack=False, show_traj=False, debug=False, skip_seconds=0.0, min_area=200, output_dir=None):
     config = load_config(config_file)
     if config is None: return
 
@@ -392,41 +442,48 @@ def track(video_path, config_file="arena_config_poly.json", method='static', bg_
 
     if is_mpg:
         input_params = []
-        output_params = [
-            '-vf', 'yadif,scale=768:576,setsar=1',
-        ]
-        reader = imageio.get_reader(video_path, 'ffmpeg', 
-                                    input_params=input_params, 
-                                    output_params=output_params)
+        output_params = ['-vf', 'yadif,scale=768:576,setsar=1']
+        reader = imageio.get_reader(video_path, 'ffmpeg', input_params=input_params, output_params=output_params)
         meta = reader.get_meta_data()
         fps = meta.get('fps', 25.0)
-        try:
-            total_frames = reader.count_frames()
-        except:
-            total_frames = 0
-            
-        start_frame = int(skip_seconds * fps)
-        
-        # SEQUENTIAL SKIP FOR 100% ACCURACY (Keyframe desync prevention)
-        print(f"Synchronizing video stream to {skip_seconds}s (Frame {start_frame})...")
+        try: total_frames = reader.count_frames()
+        except: total_frames = 0
+    else:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened(): return
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    # --- BACKTRACKING LOGIC ---
+    if backtrack:
+        print("BACKTRACKING MODE ENABLED. Forcing background method to 'global'.")
+        bg_method = 'global'
+        light_time = find_light_on_time(is_mpg, reader if is_mpg else None, cap if not is_mpg else None, fps, total_frames)
+        if light_time != -1 and light_time-300.0 > 30.0:  # Valid light-on time found and it's not too early in the video:
+            bg_method = 'global'
+            skip_seconds = max(0.0, light_time - 300.0)
+            print(f"Backtracking success: Light-on at {round(light_time, 2)}s. Forcing 'global' background.")
+            print(f"Setting tracking start time to {round(skip_seconds, 2)}s.")
+        else:
+            print(f"WARNING: Light-on event not found or too early in the video {light_time-300.0}! Falling back to 'quiet' window method.")
+            skip_seconds = 0.0 # Fail-safe: Start from the beginning if backtracking fails
+            bg_method = 'quiet'
+
+    start_frame = int(skip_seconds * fps)
+    
+    # SEQUENTIAL SKIP FOR 100% ACCURACY (Keyframe desync prevention)
+    print(f"Synchronizing video stream to {skip_seconds}s (Frame {start_frame})...")
+    if is_mpg:
         try:
             reader.set_image_index(0)
             for _ in range(start_frame): 
                 reader.get_next_data()
-                
             first_frame = reader.get_next_data()
             first_frame = cv2.cvtColor(first_frame, cv2.COLOR_RGB2BGR)
             ret = True
         except:
             ret = False
     else:
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened(): return
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        start_frame = int(skip_seconds * fps)
-         # SEQUENTIAL SKIP FOR 100% ACCURACY
-        print(f"Synchronizing video stream to {skip_seconds}s (Frame {start_frame})...")
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         for _ in range(start_frame): 
             cap.read()

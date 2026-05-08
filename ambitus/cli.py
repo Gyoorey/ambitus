@@ -233,12 +233,12 @@ def filter_dir_cmd(results_dir, output_dir, median_window, savgol_window, plot, 
 @click.option("--debug", is_flag=True, help="Show debug views")
 @click.option("--out-dir", default=None, help="Output directory override")
 @click.option("--export", is_flag=True, help="Update Master Excel and specific folder Excels after running")
-def run_pipeline(video_path, base_image, base_config, method, bg_method, min_area, skip_seconds, median_window, savgol_window, sigma, alpha, show, debug, out_dir, export):
+@click.option("--backtrack", is_flag=True, help="Use backtracking: finds light-on at the end and tracks exactly 300s before it. Forces global background.")
+def run_pipeline(video_path, base_image, base_config, method, bg_method,
+                 min_area, skip_seconds, median_window, savgol_window,
+                 sigma, alpha, show, debug, out_dir, export, backtrack):
     """Run the complete pipeline: align ROI, track, filter, and generate heatmap."""
-
-    # Example: ambitus run data/LE_17_1_45.mp4 --method static --show --debug
-    # Options: --skip-seconds 0 --median-window 5 --savgol-window 31 --sigma 15 --alpha 0.6 
-    
+  
     v_path = Path(video_path).resolve()
     video_name = v_path.stem
     results_root = None 
@@ -267,7 +267,7 @@ def run_pipeline(video_path, base_image, base_config, method, bg_method, min_are
     align_video_roi(video_path, base_image, base_config, debug, output_dir=result_dir)
     
     click.echo("Step 2: Tracking...")
-    track(video_path, aligned_config, method, bg_method, show, debug, skip_seconds, min_area, output_dir=result_dir)
+    track(video_path, aligned_config, method, bg_method, backtrack, show, debug, skip_seconds, min_area, output_dir=result_dir)
     
     click.echo("Step 3: Filtering trajectory...")
     process_trajectory(csv_file, aligned_config, None, median_window, savgol_window, show, True)
@@ -311,9 +311,9 @@ def run_pipeline(video_path, base_image, base_config, method, bg_method, min_are
 @click.option("--alpha", default=0.6, help="Transparency level for heatmap")
 @click.option("--show", is_flag=True, help="Display results")
 @click.option("--debug", is_flag=True, help="Show debug views")
-def run_dir_pipeline(video_dir, base_image, base_config, method, bg_method, min_area, skip_seconds, median_window, savgol_window, sigma, alpha, show, debug):
+@click.option("--backtrack", is_flag=True, help="Use backtracking: finds light-on at the end and tracks exactly 300s before it. Forces global background.")
+def run_dir_pipeline(video_dir, base_image, base_config, method, bg_method, min_area, skip_seconds, median_window, savgol_window, sigma, alpha, show, debug, backtrack):
     """Run the complete pipeline on all videos in a directory."""
-
 
     root_data_dir = Path(video_dir).resolve()
     results_root_dir = root_data_dir.parent / "results"
@@ -334,11 +334,11 @@ def run_dir_pipeline(video_dir, base_image, base_config, method, bg_method, min_
         rel_path = video_path.parent.relative_to(root_data_dir)
         target_result_dir = str(results_root_dir / rel_path / video_path.stem)
         run_pipeline.callback(str(video_path), base_image, base_config, method, bg_method, min_area, skip_seconds,
-                               median_window, savgol_window, sigma, alpha, show, debug, target_result_dir)
+                               median_window, savgol_window, sigma, alpha, show, debug, target_result_dir, False, backtrack)
         
     # export to Excel after processing all videos
     click.echo("Step 7: Exporting features to Excel...")
-    export_features_to_excel(str(results_root_dir), create_folder_excels=False)
+    export_features_to_excel(str(results_root_dir), create_folder_excels=True)
 
 
 @cli.command(name="playback")
