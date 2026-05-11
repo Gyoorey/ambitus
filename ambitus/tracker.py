@@ -459,6 +459,7 @@ def track(video_path, config_file="arena_config_poly.json", method='static', bg_
         print("BACKTRACKING MODE ENABLED. Forcing background method to 'global'.")
         bg_method = 'global'
         light_time = find_light_on_time(is_mpg, reader if is_mpg else None, cap if not is_mpg else None, fps, total_frames)
+        light_time = light_time - 1.0 # Subtract 1 second to ensure we start just before the light-on event, giving the background a chance to stabilize.
         if light_time != -1 and light_time-300.0 > 30.0:  # Valid light-on time found and it's not too early in the video:
             bg_method = 'global'
             skip_seconds = max(0.0, light_time - 300.0)
