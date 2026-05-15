@@ -10,6 +10,29 @@ from itertools import groupby
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+
+def calculate_cm_per_pixel_multiplier(outer_poly, physical_width_cm=80.0):
+    """
+    Calculates the average cm/pixel multiplier based on the outer_poly dimensions.
+    Since the camera is not perfectly from above and perpendicular, we take the average of the 4 sides.
+    """
+    if len(outer_poly) < 4:
+        return 0.20 # Safety default value (2mm / pixel)
+        
+    distances = []
+    for i in range(len(outer_poly)):
+        p1 = outer_poly[i]
+        p2 = outer_poly[(i + 1) % len(outer_poly)]
+        dist = np.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
+        distances.append(dist)
+        
+    # Average pixel length of the outer 80 cm walls
+    avg_pixel_length = np.mean(distances)
+    
+    if avg_pixel_length > 0:
+        return physical_width_cm / avg_pixel_length
+    return 0.20
+
 # ==============================================================================
 # GEOMETRIC HELPERS (Ray Intersection & Line of Sight Zones)
 # ==============================================================================
@@ -210,7 +233,7 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     outer_poly = clean_poly(np.array(config_data["outer_poly"], dtype=np.int32))
     arena_center = get_arena_center(inner_poly, outer_poly)
     zones = build_arena_zones(inner_poly, outer_poly)
-
+    cm_px_ratio = calculate_cm_per_pixel_multiplier(outer_poly, physical_width_cm=80.0)
     # --- 2. LOAD DATA ---
     times, xs, ys, raw_states = [], [], [], []
     has_state_col = False
@@ -453,7 +476,9 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
         
         minute_stats[f"Minute_{m+1}"] = {
             "Total_Distance_px": round(dist_total_m, 2),
+            "Total_Distance_cm": round(dist_total_m * cm_px_ratio, 2),
             "Average_Speed_px_s": round(avg_speed_m, 2),
+            "Average_Speed_cm_s": round(avg_speed_m * cm_px_ratio, 2),
             "Total_Activity_Time_s": round(act_time_m, 2),
             "Total_Inactivity_Time_s": round(inact_time_m, 2),
             "Activity_Phase_Count": act_count_m,
@@ -478,18 +503,25 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
         "Metadata": {
             "Analyzed_File": os.path.basename(csv_path),
             "Total_Time_Evaluated_s": round(float(total_time), 2),
-            "State_Classification_Source": "Pre-classified CSV (Video Pixel Variance)" if has_state_col else "ERROR: Missing"
+            "State_Classification_Source": "Pre-classified CSV (Video Pixel Variance)" if has_state_col else "ERROR: Missing",
+            "Arena_Width_px": round(float(80.0 / cm_px_ratio), 1),
+            "Conversion_Ratio_cm_per_px": round(float(cm_px_ratio), 4)
         },
         "I_General_Locomotor": {
             "Total_Distance_px": round(float(total_distance), 2),
+            "Total_Distance_cm": round(float(total_distance * cm_px_ratio), 2),
             "Total_High_Activity_Distance_px": round(float(dist_high_active), 2),
+            "Total_High_Activity_Distance_cm": round(float(dist_high_active * cm_px_ratio), 2),
             "Total_Low_Activity_Distance_px": round(float(dist_low_active), 2),
+            "Total_Low_Activity_Distance_cm": round(float(dist_low_active * cm_px_ratio), 2),
             "Total_High_Activity_Time_s": round(total_high_active_time, 2),
             "Total_Low_Activity_Time_s": round(total_low_active_time, 2),
             "Total_Combined_Activity_Time_s": round(total_high_active_time + total_low_active_time, 2),
             "Total_Inactivity_Time_s": round(total_inactive_time, 2),
             "Average_Speed_px_s": round(float(total_distance / total_time), 2) if total_time > 0 else 0.0,
+            "Average_Speed_cm_s": round(float((total_distance * cm_px_ratio) / total_time), 2) if total_time > 0 else 0.0,
             "Average_Activity_Speed_px_s": round(float(total_distance / safe_sum(all_active_phases, 'duration')), 2) if safe_sum(all_active_phases, 'duration') > 0 else 0.0,
+            "Average_Activity_Speed_cm_s": round(float((total_distance * cm_px_ratio) / safe_sum(all_active_phases, 'duration')), 2) if safe_sum(all_active_phases, 'duration') > 0 else 0.0,
             "Total_Activity_Number": len(all_active_phases),
             "Total_Inactivity_Number": len(inactive_phases),
             "Mean_Activity_Phase_Duration_s": round(safe_mean(all_active_phases, 'duration'), 2),
@@ -504,8 +536,11 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
                 "Short_Activity_Total_Time_s": round(safe_sum(short_active, 'duration'), 2),
                 "Short_Activity_Mean_Time_s": round(safe_mean(short_active, 'duration'), 2),
                 "Short_Activity_Total_Distance_px": round(safe_sum(short_active, 'distance'), 2),
+                "Short_Activity_Total_Distance_cm": round(safe_sum(short_active, 'distance') * cm_px_ratio, 2),
                 "Short_Activity_Mean_Distance_px": round(safe_mean(short_active, 'distance'), 2),
-                "Short_Activity_Mean_Speed_px_s": round(safe_sum(short_active, 'distance') / safe_sum(short_active, 'duration'), 2) if safe_sum(short_active, 'duration') > 0 else 0.0
+                "Short_Activity_Mean_Distance_cm": round(safe_mean(short_active, 'distance') * cm_px_ratio, 2),
+                "Short_Activity_Mean_Speed_px_s": round(safe_sum(short_active, 'distance') / safe_sum(short_active, 'duration'), 2) if safe_sum(short_active, 'duration') > 0 else 0.0,
+                "Short_Activity_Mean_Speed_cm_s": round((safe_sum(short_active, 'distance') * cm_px_ratio) / safe_sum(short_active, 'duration'), 2) if safe_sum(short_active, 'duration') > 0 else 0.0
             },
             "Long_Phases_GT_5s": {
                 "Long_Inactivity_Number": len(long_inactive),
@@ -515,22 +550,29 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
                 "Long_Activity_Total_Time_s": round(safe_sum(long_active, 'duration'), 2),
                 "Long_Activity_Mean_Time_s": round(safe_mean(long_active, 'duration'), 2),
                 "Long_Activity_Total_Distance_px": round(safe_sum(long_active, 'distance'), 2),
+                "Long_Activity_Total_Distance_cm": round(safe_sum(long_active, 'distance') * cm_px_ratio, 2),
                 "Long_Activity_Mean_Distance_px": round(safe_mean(long_active, 'distance'), 2),
-                "Long_Activity_Mean_Speed_px_s": round(safe_sum(long_active, 'distance') / safe_sum(long_active, 'duration'), 2) if safe_sum(long_active, 'duration') > 0 else 0.0
+                "Long_Activity_Mean_Distance_cm": round(safe_mean(long_active, 'distance') * cm_px_ratio, 2),
+                "Long_Activity_Mean_Speed_px_s": round(safe_sum(long_active, 'distance') / safe_sum(long_active, 'duration'), 2) if safe_sum(long_active, 'duration') > 0 else 0.0,
+                "Long_Activity_Mean_Speed_cm_s": round((safe_sum(long_active, 'distance') * cm_px_ratio) / safe_sum(long_active, 'duration'), 2) if safe_sum(long_active, 'duration') > 0 else 0.0
             }
         },
         "III_Spatial_and_Geometric": {
             "Corner_Time_s": round(float(corner_time), 2),
             "Corner_Time_Ratio_pct": round(float(corner_ratio), 2),
             "Clockwise_Distance_px": round(float(cw_dist), 2),
+            "Clockwise_Distance_cm": round(float(cw_dist * cm_px_ratio), 2),
             "CounterClockwise_Distance_px": round(float(ccw_dist), 2),
+            "CounterClockwise_Distance_cm": round(float(ccw_dist * cm_px_ratio), 2),
             "Directional_Asymmetry_Index": round(float(dir_asymmetry), 4),
             "U_Turn_Count": u_turns,
             "Spatial_Entropy_bits": round(float(spatial_entropy), 4)
         },
         "IV_Kinematic": {
             "Meander_Tortuosity_deg_px": round(float(meander), 4),
-            "Acceleration_Variance_px_s2": round(float(accel_variance), 4)
+            "Meander_Tortuosity_deg_cm": round(float(meander / cm_px_ratio) if cm_px_ratio > 0 else 0.0, 4),
+            "Acceleration_Variance_px_s2": round(float(accel_variance), 4),
+            "Acceleration_Variance_cm_s2": round(float(accel_variance * (cm_px_ratio ** 2)), 4)
         },
         "V_Pattern_Analysis_Habituation": {
             **minute_stats,
