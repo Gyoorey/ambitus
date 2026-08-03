@@ -470,6 +470,17 @@ def track(video_path, config_file="arena_config_poly.json", method='static', bg_
             skip_seconds = 0.0 # Fail-safe: Start from the beginning if backtracking fails
             bg_method = 'quiet'
 
+    # There are two videoes which manually need to be skipped, because the light source is not consistent
+    # Lisket/No_Alc/ID2/D3/LI_G19_N2_D3_T1.mp4
+    # Lisket/Alc/ID33/D1/LI_G17_N33_D1_T1.mp4
+    # Search the video path for these two specific cases and change the skip values
+    if "LI_G19_N2_D3_T1" in video_path:
+        skip_seconds = 33.0
+        print("Manually skipping", skip_seconds, " seconds for LI_G19_N2_D3_T1.mp4.")
+    elif "LI_G17_N33_D1_T1" in video_path:
+        skip_seconds = 48.0
+        print("Manually skipping", skip_seconds, " seconds for LI_G17_N33_D1_T1.mp4.")
+
     start_frame = int(skip_seconds * fps)
     
     # SEQUENTIAL SKIP FOR 100% ACCURACY (Keyframe desync prevention)

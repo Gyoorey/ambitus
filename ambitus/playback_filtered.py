@@ -6,7 +6,7 @@ import click
 import imageio
 from pathlib import Path
 
-def find_video_for_csv(csv_path):
+def find_video_for_csv(csv_path, video_dir="data"):
     """ 
     Attempts to automatically find the original video file based on the CSV filename 
     and the mirrored folder structure (results/ -> data/).
@@ -26,15 +26,17 @@ def find_video_for_csv(csv_path):
             
     extensions = ['.mp4', '.mpg', '.avi', '.mov']
     csv_dir = Path(csv_path).resolve().parent
-    
+
     # 2. DECONSTRUCTING THE STRUCTURE (Mirroring)
     parts = list(csv_dir.parts)
-    
-    if "results" in parts:
-        idx = parts.index("results")
+    if "results" in parts or "results_mp4" in parts:
+        try:
+            idx = parts.index("results")
+        except ValueError:
+            idx = parts.index("results_mp4")
         project_root = Path(*parts[:idx])
         sub_folders = parts[idx+1 : -1] 
-        expected_video_dir = project_root / "data" / Path(*sub_folders)
+        expected_video_dir = project_root / video_dir / Path(*sub_folders)
         
         print(f"Expected original video directory: {expected_video_dir}")
         
@@ -73,7 +75,7 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
         print(f"ERROR: Trajectory CSV file not found: {csv_path}")
         return
 
-    # --- 1. KERESSÜK MEG A HOZZÁ TARTOZÓ DEBUG CSV-T (Állapotok és Irányok) ---
+    # --- 1. FIND THE RELATED DEBUG CSV (States and Directions) ---
     base_dir = os.path.dirname(csv_path)
     filename_base = os.path.splitext(os.path.basename(csv_path))[0].replace('_trajectory_filtered', '').replace('_trajectory', '')
     
@@ -105,7 +107,7 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
     else:
         print(f"WARNING: Feature Debug CSV not found at {debug_csv_path}. States and directions will not be visualized.")
 
-    # --- 2. LOAD TRAJECTORY DATA (A szűrt útvonal) ---
+    # --- 2. LOAD TRAJECTORY DATA (Filtered path) ---
     trajectory = []
     with open(csv_path, 'r') as f:
         reader_csv = csv.reader(f, delimiter=';')
@@ -137,7 +139,7 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
     directions = np.array([pt[4] for pt in trajectory])
     corners = np.array([pt[5] for pt in trajectory])
 
-    # Kiszámítjuk az aréna durva középpontját a vektorok pontos rajzolásához
+    # Compute the arena's rough center for precise vector drawing
     approx_center_x = np.median(xs)
     approx_center_y = np.median(ys)
 
@@ -145,7 +147,7 @@ def play_filtered_trajectory(csv_path, tail_length_sec=3.0, video_dir="data", vi
     if video_file is not None and os.path.exists(video_file):
         video_path = video_file
     else:
-        video_path = find_video_for_csv(csv_path)
+        video_path = find_video_for_csv(csv_path, video_dir=video_dir)
         if video_path is None: return
 
     is_mpg = video_path.lower().endswith('.mpg')

@@ -245,8 +245,10 @@ def run_pipeline(video_path, base_image, base_config, method, bg_method,
 
     if out_dir is None:
         parts = list(v_path.parts)
-        if "data" in parts:
-            idx = parts.index("data")
+        data_folder_name = v_path.parent.name
+        print(f"DBG: Video path parts: {parts}, data folder name: {data_folder_name}")
+        if data_folder_name in parts:
+            idx = parts.index(data_folder_name)
             project_root = Path(*parts[:idx])
             results_root = project_root / "results"
             sub_folders = parts[idx+1 : -1]
@@ -277,7 +279,7 @@ def run_pipeline(video_path, base_image, base_config, method, bg_method,
 
     click.echo("Step 5: Classifying activity...")
     classified_csv = os.path.join(result_dir, f"{video_name}_{method}_trajectory_filtered_classified.csv")
-    classify_activities(filtered_csv, output_path=classified_csv, debug=debug)
+    classify_activities(filtered_csv, output_path=classified_csv, debug=debug, search_dir=str(v_path.parent))
 
     click.echo("Step 6: Extracting features...")
     features_json = os.path.join(result_dir, f"{video_name}_{method}_features.json")
@@ -356,7 +358,7 @@ def playback_cmd(csv_dir, video_dir, video_file, method, tail, speed, save):
     """
     csv_first_part = Path(csv_dir).name
     csv_path = os.path.join(csv_dir, f"{csv_first_part}_{method}_trajectory_filtered.csv")
-    play_filtered_trajectory(csv_path, tail_length_sec=tail, video_file=video_file, speed=speed, save_video=save)
+    play_filtered_trajectory(csv_path, tail_length_sec=tail, video_dir=video_dir, video_file=video_file, speed=speed, save_video=save)
 
 @cli.command(name="calibrate")
 @click.argument("results_dir", type=click.Path())
@@ -374,12 +376,13 @@ def calibrate_cmd(results_dir, output):
 @click.option("--sad", default=20, help="SAD threshold for classifying Low Active vs Inactive (default:100)")
 @click.option("--speed", default=None, help="Speed threshold (px/s) for classifying High Active vs Low Active (default: None - global threshold)")
 @click.option("--debug", is_flag=True, help="show debug window")
-def activity_cmd(csv_path, output, box_size, sad, speed, debug):
+@click.option("--search-dir", default="data", help="Directory to search for the original video file (default: data)")
+def activity_cmd(csv_path, output, box_size, sad, speed, debug, search_dir):
     """
     Classifies each frame into High Active, Low Active, or Inactive based on speed and local pixel changes.
     Outputs a new CSV with the activity state for each frame.
     """
-    classify_activities(csv_path, output_path=output, box_size=box_size, sad_threshold=sad, high_active_speed=speed, debug=debug)
+    classify_activities(csv_path, output_path=output, box_size=box_size, sad_threshold=sad, high_active_speed=speed, debug=debug, search_dir=search_dir)
 
 
 @cli.command(name="extract")

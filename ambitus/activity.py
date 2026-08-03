@@ -8,7 +8,7 @@ import click
 import imageio
 from itertools import groupby
 
-def find_video_for_csv(csv_path):
+def find_video_for_csv(csv_path, search_dir="data"):
     """ Attempts to automatically find the original video file based on the CSV filename. """
     basename = os.path.basename(csv_path)
     name_without_ext = basename.replace('.csv', '')
@@ -23,6 +23,14 @@ def find_video_for_csv(csv_path):
             
     extensions = ['.mp4', '.mpg', '.avi', '.mov']
     csv_dir = Path(csv_path).resolve().parent
+
+    search_dirs = [search_dir, '.', '..']
+    for d in search_dirs:
+        for ext in extensions:
+            possible_path = os.path.join(d, name_without_ext + ext)
+            if os.path.exists(possible_path):
+                print("Found video in search path:", possible_path)
+                return possible_path
     
     parts = list(csv_dir.parts)
     if "results" in parts:
@@ -44,7 +52,7 @@ def find_video_for_csv(csv_path):
         if p2.exists(): return str(p2)
     return None
 
-def classify_activities(csv_path, output_path=None, box_size=80, sad_threshold=20, high_active_speed=None, debug=False):
+def classify_activities(csv_path, output_path=None, box_size=80, sad_threshold=20, high_active_speed=None, debug=False, search_dir="data"):
     """
     Video-based activity classifier distinguishing Locomotion, Micro-movements, and Resting.
     States: 2 = High Active (Locomotion), 1 = Low Active (Grooming/Sniffing), 0 = Inactive (Resting)
@@ -113,7 +121,7 @@ def classify_activities(csv_path, output_path=None, box_size=80, sad_threshold=2
     sad_values = np.zeros(len(times), dtype=float) 
 
     # --- 2. FIND AND OPEN VIDEO ---
-    video_path = find_video_for_csv(csv_path)
+    video_path = find_video_for_csv(csv_path, search_dir=search_dir)
     if video_path is None:
         print(f"ERROR: Could not find video for CSV: {csv_path}")
         return
@@ -306,7 +314,8 @@ def classify_activities(csv_path, output_path=None, box_size=80, sad_threshold=2
 @click.option("--sad-thresh", default=20, help="Number of changed pixels to consider Low Active")
 @click.option("--speed-thresh", type=float, default=None, help="Speed in px/s to consider High Active (Auto-detected if not provided)")
 @click.option("--debug", is_flag=True, help="Show a real-time visual playback of the classification")
-def cli(csv_path, output, box_size, sad_thresh, speed_thresh, debug):
+@click.option("--search-dir", default="data", help="Directory to search for the original video file (default: data)")
+def cli(csv_path, output, box_size, sad_thresh, speed_thresh, debug, search_dir):
     """
     Analyzes the video at the tracked positions to distinguish between 
     High Active, Low Active (Micro-movements), and Inactivity (Resting).
@@ -318,7 +327,8 @@ def cli(csv_path, output, box_size, sad_thresh, speed_thresh, debug):
         box_size=box_size, 
         sad_threshold=sad_thresh, 
         high_active_speed=speed_thresh, 
-        debug=debug
+        debug=debug,
+        search_dir=search_dir
     )
 
 if __name__ == '__main__':
