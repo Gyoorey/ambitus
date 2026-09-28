@@ -70,7 +70,7 @@ Extract 39 distinct behavioral, spatial, and kinematic features into a JSON file
 
 ### 7. Playback & Visualization
 Run a playback on the filtered results. It dynamically draws the rat's state, fading comet tail, and directional vectors on the original video:
-`ambitus playback results/45 --method static --speed 2.0 --tail 3.0`
+`ambitus playback results/resulted_csv_folder --video-dir videos`
 *(Use `--save` to record the playback to an MP4 file).*
 
 ---
@@ -91,7 +91,7 @@ Executes the entire workflow (Align ROI -> Track -> Filter -> Heatmap -> Classif
 ### Run Pipeline on a Directory
 Runs the complete pipeline recursively on all `.mp4` and `.mpg` videos found in a directory. Automatically mirrors the folder structure into the `results/` folder.
 
-`ambitus run_dir data/Experiment_1/`
+`ambitus run_dir somewhere/videos_dir --backtrack --bg-method global`
 *(Supports the same advanced flags as the single `run` command, including `--backtrack`).*
 
 ---
