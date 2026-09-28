@@ -219,6 +219,86 @@ def generate_feature_dashboard(times, speeds, states, xs, ys, arena_center, dire
     fig.update_layout(height=800, width=1200, title_text="Feature Extraction Debug Dashboard", showlegend=True, hovermode="closest")
     fig.write_html(html_path)
 
+def validate_extracted_features(features, tolerance=0.15):
+    """
+    Validates logical invariants of the extracted features.
+    Raises warnings or assertions if behavioral features violate mathematical or physical constraints.
+    """
+    issues = []
+    meta = features["Metadata"]
+    gen = features["I_General_Locomotor"]
+    phase = features["II_Phase_Specific"]["Contiguous_Phases"] if "Contiguous_Phases" in features["II_Phase_Specific"] else features["II_Phase_Specific"]
+    short_p = phase.get("Short_Phases_LEQ_5s", {})
+    long_p = phase.get("Long_Phases_GT_5s", {})
+    spat = features["III_Spatial_and_Geometric"]
+    hab = features["V_Pattern_Analysis_Habituation"]
+
+    # 1. TIME CONSERVATION: Total Time == High + Low + Inactive
+    summed_time = gen["Total_High_Activity_Time_s"] + gen["Total_Low_Activity_Time_s"] + gen["Total_Inactivity_Time_s"]
+    if abs(summed_time - meta["Total_Time_Evaluated_s"]) > tolerance:
+        issues.append(f"[TIME] Total time mismatch: Evaluated={meta['Total_Time_Evaluated_s']}s vs Sum(High+Low+Inact)={summed_time:.2f}s")
+
+    # 2. ACTIVITY TIME CONSISTENCY: High + Low == Combined Activity Time
+    comb_time = gen["Total_High_Activity_Time_s"] + gen["Total_Low_Activity_Time_s"]
+    if abs(comb_time - gen["Total_Combined_Activity_Time_s"]) > 0.05:
+        issues.append(f"[TIME] Combined activity mismatch: High+Low={comb_time:.2f}s vs Combined={gen['Total_Combined_Activity_Time_s']}s")
+
+    # 3. PHASE COUNT STRICT ALTERNATION: |Active_Count - Inactive_Count| <= 1
+    act_count = gen["Total_Activity_Number"]
+    inact_count = gen["Total_Inactivity_Number"]
+    if abs(act_count - inact_count) > 1:
+        issues.append(f"[PHASE COUNT] Strict alternation violated: {act_count} active vs {inact_count} inactive phases (diff > 1)")
+
+    # 4. PHASE SPLIT INTEGRITY: Total Active Count == Short + Long
+    s_act_num = short_p.get("Short_Activity_Number", 0)
+    l_act_num = long_p.get("Long_Activity_Number", 0)
+    if act_count != (s_act_num + l_act_num):
+        issues.append(f"[PHASE SPLIT] Active count mismatch: Total={act_count} vs Short({s_act_num})+Long({l_act_num})={s_act_num + l_act_num}")
+
+    # 5. PHASE SPLIT INTEGRITY: Total Inactive Count == Short + Long
+    s_inact_num = short_p.get("Short_Inactivity_Number", 0)
+    l_inact_num = long_p.get("Long_Inactivity_Number", 0)
+    if inact_count != (s_inact_num + l_inact_num):
+        issues.append(f"[PHASE SPLIT] Inactive count mismatch: Total={inact_count} vs Short({s_inact_num})+Long({l_inact_num})={s_inact_num + l_inact_num}")
+
+    # 6. DURATION INTEGRITY: Short_Duration + Long_Duration == Total_Time
+    dur_act = short_p.get("Short_Activity_Total_Time_s", 0) + long_p.get("Long_Activity_Total_Time_s", 0)
+    dur_inact = short_p.get("Short_Inactivity_Total_Time_s", 0) + long_p.get("Long_Inactivity_Total_Time_s", 0)
+    if abs((dur_act + dur_inact) - meta["Total_Time_Evaluated_s"]) > tolerance:
+        issues.append(f"[PHASE DURATION] Phase durations do not cover total time: Sum={dur_act + dur_inact:.2f}s vs Total={meta['Total_Time_Evaluated_s']}s")
+
+    # 7. SPATIAL BOUNDS & DIRECTION ASYMMETRY: Index between 0 and 1
+    asym = spat.get("Directional_Asymmetry_Index", 0)
+    if not (0.0 <= asym <= 1.0001):
+        issues.append(f"[SPATIAL] Directional Asymmetry Index out of range [0, 1]: {asym}")
+
+    # 8. CORNER TIME RATIO: Between 0% and 100%
+    c_ratio = spat.get("Corner_Time_Ratio_pct", 0)
+    if not (0.0 <= c_ratio <= 100.0001):
+        issues.append(f"[SPATIAL] Corner time ratio out of range [0, 100]: {c_ratio}%")
+
+    # 9. MINUTE-BY-MINUTE DISTANCE SUM == TOTAL DISTANCE (if total_time >= 300s)
+    if meta["Total_Time_Evaluated_s"] >= 300.0:
+        min_dist_sum = sum(hab[f"Minute_{m+1}"]["Total_Distance_px"] for m in range(5))
+        # Note: If recording is longer than 300s, this should match the first 300s distance
+        if min_dist_sum > gen["Total_Distance_px"] + 1.0:
+            issues.append(f"[HABITUATION] Sum of first 5 minutes distance ({min_dist_sum:.2f}px) exceeds total distance ({gen['Total_Distance_px']}px)")
+
+    # STRICT 5-MINUTE DURATION CHECK
+    if abs(meta["Total_Time_Evaluated_s"] - 300.0) > 1.0:
+        issues.append(f"[PROTOCOL ERROR] Total recording time must be 300.0s, but got {meta['Total_Time_Evaluated_s']}s")
+
+    # Print validation report
+    if issues:
+        print("\n" + "!" * 80)
+        print(f"⚠️  FEATURE EXTRACTION VALIDATION FAILED WITH {len(issues)} ISSUE(S):")
+        for iss in issues:
+            print(f"   -> {iss}")
+        print("!" * 80 + "\n")
+    else:
+        print("✅ Validation PASSED: All physical and mathematical invariants hold.")
+    return len(issues) == 0
+
 # ==============================================================================
 # FEATURE EXTRACTION ENGINE
 # ==============================================================================
@@ -322,28 +402,6 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
 
     # --- 5. PHASE ANALYSIS ---
     high_active_phases, low_active_phases, inactive_phases = [], [], []
-    
-    start_idx = 0
-    for key, group in groupby(states):
-        length = sum(1 for _ in group)
-        end_idx = min(start_idx + length, len(times) - 1)
-        phase_duration = times[end_idx] - times[start_idx]
-        phase_dist = np.sum(distances[start_idx:end_idx])
-        start_rel = times[start_idx] - times[0] 
-        
-        phase_info = {'duration': phase_duration, 'distance': phase_dist, 'start_rel': start_rel}
-        
-        if key == 2: high_active_phases.append(phase_info)
-        elif key == 1: low_active_phases.append(phase_info)
-        else: inactive_phases.append(phase_info)
-            
-        start_idx += length
-
-    all_active_phases = high_active_phases + low_active_phases
-    short_active = [p for p in all_active_phases if p['duration'] <= 5.0]
-    long_active = [p for p in all_active_phases if p['duration'] > 5.0]
-    short_inactive = [p for p in inactive_phases if p['duration'] <= 5.0]
-    long_inactive = [p for p in inactive_phases if p['duration'] > 5.0]
 
     def safe_mean(lst, key=None):
         if not lst: return 0.0
@@ -355,9 +413,51 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
         if key: return float(np.sum([item[key] for item in lst]))
         return float(np.sum(lst))
 
-    total_high_active_time = safe_sum(high_active_phases, 'duration')
-    total_low_active_time = safe_sum(low_active_phases, 'duration')
-    total_inactive_time = safe_sum(inactive_phases, 'duration')
+    # ==============================================================================
+    # CONTINUOUS (BINARY) ACTIVITY ANALYSIS
+    # Here, the state can only be active (1 or 2) or inactive (0).
+    # Thus, a low <-> high transition does NOT interrupt the phase; only a complete stop (0) does.
+    binary_states = (states > 0).astype(int)
+    merged_active_phases, merged_inactive_phases = [], []
+
+    start_idx_cont = 0
+    for is_active, group in groupby(binary_states):
+        length = sum(1 for _ in group)
+        end_idx = min(start_idx_cont + length, len(times) - 1)
+        phase_duration = times[end_idx] - times[start_idx_cont]
+        phase_dist = np.sum(distances[start_idx_cont:end_idx])
+        start_rel = times[start_idx_cont] - times[0]
+
+        phase_info = {'duration': phase_duration, 'distance': phase_dist, 'start_rel': start_rel}
+
+        if is_active == 1:
+            merged_active_phases.append(phase_info)
+        else:
+            merged_inactive_phases.append(phase_info)
+
+        start_idx_cont += length
+
+    short_active   = [p for p in merged_active_phases if p['duration'] <= 5.0]
+    long_active    = [p for p in merged_active_phases if p['duration'] > 5.0]
+    short_inactive = [p for p in merged_inactive_phases if p['duration'] <= 5.0]
+    long_inactive  = [p for p in merged_inactive_phases if p['duration'] > 5.0]
+    total_active_time = safe_sum(merged_active_phases, 'duration')
+    total_inactive_time = safe_sum(merged_inactive_phases, 'duration')
+
+    states_aligned = states[:len(dt)]
+    total_high_active_time = float(np.sum(dt[states_aligned == 2]))
+    total_low_active_time = float(np.sum(dt[states_aligned == 1]))
+    total_inactive_time = float(np.sum(dt[states_aligned == 0]))
+
+    #To be compatible with the original JSON output structure, we will store the merged phases as the "all_active_phases" and "inactive_phases".
+    all_active_phases = merged_active_phases
+    inactive_phases = merged_inactive_phases
+
+    # --- Comparison HTML ---
+    # comp_html_path = output_json_path.replace('.json', '_phase_comparison.html')
+    # generate_phase_comparison_dashboard(times, speeds, states, binary_states, comp_html_path)
+
+    # ==============================================================================
 
     # --- 6. DIRECTIONAL STABILIZATION (1s Majority Voting for CW/CCW) ---
     raw_directions = np.zeros(len(xs), dtype=int)
@@ -396,14 +496,128 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
         d = smoothed_directions[i]
         if d == 1:
             cw_dist += distances[i]
-            if last_valid_dir == -1: u_turns += 1
-            last_valid_dir = 1
         elif d == -1:
             ccw_dist += distances[i]
-            if last_valid_dir == 1: u_turns += 1
-            last_valid_dir = -1
-
+    
     dir_asymmetry = abs(cw_dist - ccw_dist) / (cw_dist + ccw_dist) if (cw_dist + ccw_dist) > 0 else 0.0
+
+    # --------------------------------------------------------------------------
+    # 6.B. DERIVATIVE SIGN-CHANGE & CYCLIC 8-OCTANT U-TURN DETECTION
+    # --------------------------------------------------------------------------
+    MIN_MOVE_PX = 4.0
+    raw_angles_rad = np.full(len(distances), np.nan)
+
+    # 1. Compute raw angle only for valid movement (State == 2 and displacement >= 2px)
+    for i in range(len(distances)):
+        st = states[i] if i < len(states) else 0
+        if st == 2 and distances[i] >= MIN_MOVE_PX:
+            raw_angles_rad[i] = np.arctan2(dy[i], dx[i])
+
+    # 2. Zero-Order Hold: keep the last valid angle during stops
+    filled_angles_rad = np.zeros_like(raw_angles_rad)
+    last_valid_ang = 0.0
+    for a in raw_angles_rad:
+        if not np.isnan(a):
+            last_valid_ang = a
+            break
+
+    for i in range(len(raw_angles_rad)):
+        if not np.isnan(raw_angles_rad[i]):
+            last_valid_ang = raw_angles_rad[i]
+        filled_angles_rad[i] = last_valid_ang
+
+    # 3. Unwrap: create continuous angle signal by removing cyclic jumps
+    unwrapped_angles = np.unwrap(filled_angles_rad)
+
+    # 4. Smoothing with a larger time window (approx. 1 second = ~25 frames at 25 FPS)
+    smooth_window = max(5, int(fps * 1))
+    kernel = np.ones(smooth_window) / smooth_window
+    smoothed_heading_rad = np.convolve(unwrapped_angles, kernel, mode='same')
+
+    # 5. Determine cyclic 8-octant (strictly 1..8, no 0 direction)
+    # Convert to [0, 360) degrees
+    smoothed_deg = np.degrees(smoothed_heading_rad) % 360.0
+    # Add 22.5 degree offset so octant 1 is symmetric around East
+    shifted_deg = (smoothed_deg + 22.5) % 360.0
+    stable_headings = (shifted_deg // 45).astype(int) + 1  # Értékek: 1..8 ciklikusan
+
+    # 6. Angular velocity (derivative: dTheta / dt)
+    # This indicates the speed and direction of octant drift
+    heading_derivative = np.gradient(smoothed_heading_rad, times[:-1])
+
+    # 7. U-turn detection: ONLY based on zero-crossings of the derivative (sign changes)
+    u_turns = 0
+    u_turn_timestamps = []
+
+    ROT_THRESHOLD = np.radians(2.0)  # ~2.0 deg/frame minimum rotational speed
+
+    last_rot_sign = 0
+    turn_anchor_octant = stable_headings[0]
+    turn_start_time = times[0]
+    max_rot_speed = 0.0
+    peak_turn_time = times[0]
+    in_active_turn = False
+
+    for i in range(1, len(heading_derivative)):
+        rot_speed = heading_derivative[i]
+        abs_speed = abs(rot_speed)
+
+            # Current rotational state
+        if rot_speed > ROT_THRESHOLD:
+            current_sign = 1   # Oktánsok növekednek (CW)
+        elif rot_speed < -ROT_THRESHOLD:
+            current_sign = -1  # Oktánsok csökkennek (CCW)
+        else:
+            current_sign = 0   # Egyenes haladás vagy megállás
+
+        # ----------------------------------------------------------------------
+        # A) DURING ACTIVE ROTATION
+        # ----------------------------------------------------------------------
+        if current_sign != 0:
+            if not in_active_turn:
+                # Rotation just started
+                in_active_turn = True
+                turn_start_time = times[i - 1]
+                max_rot_speed = abs_speed
+                peak_turn_time = times[i]
+                last_rot_sign = current_sign
+            else:
+                # Track rotational peak (where rotation is fastest)
+                if abs_speed > max_rot_speed:
+                    max_rot_speed = abs_speed
+                    peak_turn_time = times[i]
+
+                # If rotation direction reverses during the maneuver
+                if current_sign != last_rot_sign:
+                    last_rot_sign = current_sign
+
+        # ----------------------------------------------------------------------
+        # B) ROTATION SUBSIDED (returned to straight or stopped)
+        # ----------------------------------------------------------------------
+        else:
+            if in_active_turn:
+                # Maneuver ended: evaluate net angular change
+                curr_octant = stable_headings[i]
+                octant_diff = abs(curr_octant - turn_anchor_octant)
+                if octant_diff > 4:
+                    octant_diff = 8 - octant_diff
+
+                # Exactly opposite octant reached (180 deg, diff == 4)?
+                if octant_diff == 4:
+                    u_turns += 1
+                    # The actual U-turn time is at the rotational speed peak
+                    u_turn_timestamps.append(round(float(peak_turn_time), 2))                   
+                    # Update anchor octant
+                    turn_anchor_octant = curr_octant
+
+                # If not 180 deg (e.g. 90 deg turn), update anchor
+                elif octant_diff >= 2:
+                    turn_anchor_octant = curr_octant
+
+                # Reset for next straight segment
+                in_active_turn = False
+                max_rot_speed = 0.0
+                last_rot_sign = 0
 
     # --- 7. SPATIAL ANALYSIS (Corners vs Corridors) ---
     corner_time = 0.0
@@ -579,6 +793,8 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
             "Intra_Session_Habituation_Index": round(float(habituation_index), 4)
         }
     }
+
+    validate_extracted_features(features)
 
     os.makedirs(os.path.dirname(output_json_path), exist_ok=True)
     with open(output_json_path, 'w', encoding='utf-8') as f:
