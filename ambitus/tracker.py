@@ -396,7 +396,7 @@ def generate_median_background(video_path, is_mpg, reader, cap, start_frame, fps
     
     return median_bg
 
-def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
+def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos, frame_num=None):
     """ Clean debug view builder. """
     h, w = frame.shape[:2]
     panel_width = 400 
@@ -418,6 +418,7 @@ def create_debug_view(frame, fgmask, tracker, measured_coords, final_pos):
         status_color = (0, 0, 255)
         status_text = "LOST / NO DETECT"
 
+    cv2.putText(info_panel, f"FRAME: {frame_num if frame_num is not None else 'N/A'}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2); y_off += line_h
     cv2.putText(info_panel, f"METHOD: {tracker.name}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2); y_off += line_h
     cv2.putText(info_panel, f"STATUS: {status_text}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2); y_off += line_h
     cv2.putText(info_panel, f"Meas: {measured_coords}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 200), 1); y_off += line_h
@@ -684,7 +685,7 @@ def track(video_path, config_file="arena_config_poly.json", method='static', bg_
             cv2.polylines(frame, [pts_out], True, (255, 255, 0), 1)
             cv2.polylines(frame, [pts_in], True, (255, 255, 0), 1)
 
-            display_frame = create_debug_view(frame, fgmask, tracker, measured_coords, (final_cx, final_cy)) if debug else frame
+            display_frame = create_debug_view(frame, fgmask, tracker, measured_coords, (final_cx, final_cy), frame_counter) if debug else frame
 
             cv2.imshow("Tracking", display_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
