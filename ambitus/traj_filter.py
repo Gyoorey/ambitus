@@ -252,7 +252,7 @@ def draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, f
 # ==============================================================================
 # MAIN PROCESSING LOGIC
 # ==============================================================================
-def process_trajectory(csv_path, config_path=None, output_path=None, median_window=5, savgol_window=31, show_plot=True, use_plotly=False):
+def process_trajectory(csv_path, config_path=None, output_path=None, median_window=5, savgol_window=31, show_plot=True, use_plotly=False, debug=True):
     """
     Reads a trajectory CSV, crops to a 5-minute valid window, applies GEOMETRICALLY SAFE 
     interpolation, removes outliers, applies a low-pass filter, and saves the cleaned data.
@@ -321,58 +321,59 @@ def process_trajectory(csv_path, config_path=None, output_path=None, median_wind
         print("ERROR: Not enough data left after cropping. Aborting.")
         return
 
-    # --- 2.5 TELEPORTATION & SPIKE REMOVAL (PRE-FILTERING) ---
-    # Actively remove transient tracking errors before interpolation.
-    # If a point requires impossible speed or jumps across a wall quickly, it is deleted.
+    # --- 2.5 TELEPORTATION & SPIKE REMOVAL (ROBUST LOCAL CONSENSUS) ---
+    MAX_SPEED_PX_S = 1000.0  # Maximum physiological speed
     
-    MAX_SPEED_PX_S = 1000.0  # Maximum acceptable rat speed in pixels per second
-    MIN_TRACKING_GAP_S = 0.5 # If the tracker loses the rat for at least half a second, accept the next point as a new anchor
-
     valid_mask = np.ones(len(times), dtype=bool)
-    last_valid_idx = 0
     spikes_removed = 0
 
-    for i in range(1, len(times)):    
-        t_curr = times[i]
-        x_curr, y_curr = xs[i], ys[i]
-
-        raw_dt = t_curr - times[i-1]
-
-        if raw_dt > MIN_TRACKING_GAP_S:
-            # The tracker "went blind" for a while. Since we don't know where the rat traveled,
-            # we must blindly accept the first new point as the new anchor point,
-            # lest we filter out the real rat after it navigates around a corner!
-            last_valid_idx = i
+    # We iterate through points with lookahead to distinguish single-frame spikes
+    # from genuine rapid locomotion.
+    for i in range(1, len(times) - 1):
+        dt_prev = times[i] - times[i-1]
+        dt_next = times[i+1] - times[i]
+        
+        if dt_prev <= 0 or dt_next <= 0:
             continue
+            
+        p_prev = np.array([xs[i-1], ys[i-1]])
+        p_curr = np.array([xs[i], ys[i]])
+        p_next = np.array([xs[i+1], ys[i+1]])
         
-        # 2. If tracking was continuous, compare against the last GOOD point (anchor)
-        t_anchor = times[last_valid_idx]
-        x_anchor, y_anchor = xs[last_valid_idx], ys[last_valid_idx]
+        # Calculate speeds to/from current point
+        speed_in = np.linalg.norm(p_curr - p_prev) / dt_prev
+        speed_out = np.linalg.norm(p_next - p_curr) / dt_next
         
-        dt = t_curr - t_anchor
-        dist = np.sqrt((x_curr - x_anchor)**2 + (y_curr - y_anchor)**2)
-        speed = dist / dt if dt > 0 else 0
+        # Direct baseline displacement between neighbors
+        direct_speed = np.linalg.norm(p_next - p_prev) / (dt_prev + dt_next)
         
         is_spike = False
         
-        # RULE 1: Impossible speed (teleportation within the same corridor)
-        if speed > MAX_SPEED_PX_S:
+        # RULE 1: Extreme Speed Spike (Jumps away and immediately comes back)
+        if (speed_in > MAX_SPEED_PX_S or speed_out > MAX_SPEED_PX_S) and direct_speed < MAX_SPEED_PX_S:
             is_spike = True
-            
-        # RULE 2: Jump through wall (teleportation between corridors)
-        # Since we know from raw_dt that there was NO measurement gap, it is physically impossible
-        # for the rat to be on the other side of the wall. We delete it mercilessly.
-        elif dist > 40.0:
-            if not is_path_valid((x_anchor, y_anchor), (x_curr, y_curr), inner_poly):
-                is_spike = True
+            if debug:
+                print(f"Removed speed spike at T={round(times[i], 2)}s: In={round(speed_in,1)}px/s, Out={round(speed_out,1)}px/s")
                 
+        # RULE 2: Wall-Crossing Spike (Single point jumps into or across inner wall)
+        if not is_spike and inner_poly is not None:
+            # Did the point jump across the wall and return?
+            jump_in_wall = not is_path_valid(p_prev, p_curr, inner_poly)
+            jump_out_wall = not is_path_valid(p_curr, p_next, inner_poly)
+            direct_safe = is_path_valid(p_prev, p_next, inner_poly)
+            
+            # Point is inside forbidden island OR crosses wall while direct path is safe
+            point_inside_inner = cv2.pointPolygonTest(inner_poly, (float(xs[i]), float(ys[i])), False) > 0
+            
+            if point_inside_inner or (jump_in_wall and direct_safe):
+                is_spike = True
+                if debug:
+                    print(f"Removed wall-collision spike at T={round(times[i], 2)}s.")
+
         if is_spike:
             valid_mask[i] = False
             spikes_removed += 1
-            # The anchor point does NOT get updated! We compare the next point against the old, good anchor too.
-        else:
-            # This was valid movement, update the anchor
-            last_valid_idx = i
+
 
     if spikes_removed > 0:
         print(f"Removed {spikes_removed} teleportation spike points from raw data.")
@@ -512,7 +513,7 @@ def process_trajectory(csv_path, config_path=None, output_path=None, median_wind
         print(f"WARNING: Could not find statistics file to update ({stats_file})")
 
     print(f"Success! Filtered trajectory saved to: {output_path}")
-
+    
     # --- 6. VISUALIZATION ---
     base_dir = os.path.dirname(csv_path)
     filename_base = os.path.splitext(os.path.basename(csv_path))[0]
@@ -524,6 +525,15 @@ def process_trajectory(csv_path, config_path=None, output_path=None, median_wind
         plot_path = os.path.join(base_dir, f"{filename_base}_plot.jpg")
         draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, filename=plot_path, show_plot=show_plot)
 
+    filter_stats = {
+        "Valid_Window_Start_s": round(float(t_start), 2),
+        "Valid_Window_End_s": round(float(t_end), 2),
+        "Teleportation_Spikes_Removed": int(spikes_removed),
+        "Wall_Jumps_Rejected": int(invalid_jumps),
+        "Remaining_Points": int(len(times))
+    }
+    return filter_stats
+
 
 @click.command()
 @click.argument("csv_path", type=click.Path(exists=True))
@@ -533,7 +543,8 @@ def process_trajectory(csv_path, config_path=None, output_path=None, median_wind
 @click.option("--savgol-window", default=31, help="Window size for Low-Pass Filtering (default: 31)")
 @click.option("--plot", is_flag=True, help="Show the comparison graph")
 @click.option("--plotly", is_flag=True, help="Use interactive Plotly graph instead of OpenCV")
-def cli(csv_path, config, output, median_window, savgol_window, plot, plotly):
+@click.option("--debug", is_flag=True, help="Enable debug messages for spike detection")
+def cli(csv_path, config, output, median_window, savgol_window, plot, plotly, debug):
     """
     Interpolates missing frames, applies geometric wall-collision checks, 
     crops data to the first 5 minutes of activity, and removes tracking outliers.
@@ -545,7 +556,8 @@ def cli(csv_path, config, output, median_window, savgol_window, plot, plotly):
         median_window=median_window, 
         savgol_window=savgol_window, 
         show_plot=plot,
-        use_plotly=plotly
+        use_plotly=plotly,
+        debug=debug
     )
 
 if __name__ == '__main__':
