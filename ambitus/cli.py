@@ -142,7 +142,8 @@ def heatmap_cmd(csv_path, video_dir, output, sigma, alpha, show):
 @click.option("--plot", is_flag=True, help="Show the comparison graph")
 @click.option("--plotly", is_flag=True, help="Use interactive Plotly graph instead of OpenCV")
 @click.option("--config", default="arena_config_poly.json", help="Path to ROI config JSON file")
-def filter_cmd(csv_path, config, output, median_window, savgol_window, plot, plotly):
+@click.option("--debug", is_flag=True, help="Enable debug messages for spike detection")
+def filter_cmd(csv_path, config, output, median_window, savgol_window, plot, plotly, debug):
     """
     Interpolates missing frames, removes tracking outliers, and applies a low-pass filter to the trajectory CSV.
     Outputs integer coordinates.
@@ -154,7 +155,8 @@ def filter_cmd(csv_path, config, output, median_window, savgol_window, plot, plo
         median_window=median_window, 
         savgol_window=savgol_window, 
         show_plot=plot,
-        use_plotly=plotly
+        use_plotly=plotly,
+        debug=debug
     )
 
 
@@ -167,7 +169,8 @@ def filter_cmd(csv_path, config, output, median_window, savgol_window, plot, plo
 @click.option("--plotly", is_flag=True, help="Use interactive Plotly graph instead of OpenCV")
 @click.option("--heatmap", is_flag=True, help="Generate heatmap for filtered trajectories")
 @click.option("--config", default="arena_config_poly.json", help="Path to ROI config JSON file")
-def filter_dir_cmd(results_dir, output_dir, median_window, savgol_window, plot, plotly, heatmap, config):
+@click.option("--debug", is_flag=True, help="Enable debug messages for spike detection")
+def filter_dir_cmd(results_dir, output_dir, median_window, savgol_window, plot, plotly, heatmap, config, debug):
     """Apply trajectory filtering to all CSV files in results subdirectories."""
     root_dir = Path(results_dir).resolve()
     csv_files = list(root_dir.rglob('*_trajectory.csv'))
@@ -191,7 +194,8 @@ def filter_dir_cmd(results_dir, output_dir, median_window, savgol_window, plot, 
             median_window=median_window,
             savgol_window=savgol_window,
             show_plot=plot,
-            use_plotly=plotly
+            use_plotly=plotly,
+            debug=debug
         )
         
         if heatmap:
@@ -272,7 +276,7 @@ def run_pipeline(video_path, base_image, base_config, method, bg_method,
     track(video_path, aligned_config, method, bg_method, backtrack, show, debug, skip_seconds, min_area, output_dir=result_dir)
     
     click.echo("Step 3: Filtering trajectory...")
-    process_trajectory(csv_file, aligned_config, None, median_window, savgol_window, show, True)
+    process_trajectory(csv_file, aligned_config, None, median_window, savgol_window, show, True, debug=debug)
     
     click.echo("Step 4: Generating heatmap...")
     generate_heatmap(filtered_csv, None, sigma, alpha, show, video_dir=str(v_path.parent))
