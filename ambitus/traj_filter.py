@@ -13,6 +13,64 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # ==============================================================================
+# [MOD] TRACKING EXCURSION REMOVAL - parameters
+# ==============================================================================
+# A rat cannot move EXCURSION_JUMP_PX in one frame (25 px/frame = 625 px/s at 25 fps).
+# When the tracked position jumps that far, stays away for at most EXCURSION_MAX_FRAMES
+# frames and then jumps back to within EXCURSION_RETURN_PX of where it was, the frames in
+# between are a tracking artefact (blob switching / ghost), not movement. They are removed
+# and filled by the normal interpolation step.
+EXCURSION_JUMP_PX = 25.0
+EXCURSION_MAX_FRAMES = 15  # 0.6 s at 25 fps
+EXCURSION_RETURN_PX = 25.0
+
+
+def remove_tracking_excursions(times, xs, ys, jump_px=EXCURSION_JUMP_PX, max_frames=EXCURSION_MAX_FRAMES,
+                               return_px=EXCURSION_RETURN_PX, debug=False):
+    """
+    Finds short tracking excursions: the position jumps more than `jump_px` between two
+    consecutive frames, stays away for at most `max_frames` frames, and then jumps back
+    (again more than `jump_px` in one frame) to within `return_px` of the last position
+    before the first jump.
+    Returns (keep_mask, removed_intervals), where removed_intervals is a list of
+    (t_first_removed, t_last_removed).
+    """
+    n = len(times)
+    keep = np.ones(n, dtype=bool)
+    removed = []
+    if n < 3:
+        return keep, removed
+ 
+    dt = np.diff(times)
+    med_dt = np.median(dt)
+    steps = np.hypot(np.diff(xs), np.diff(ys))
+    # jump[i] is True when the step from frame i to frame i+1 is a one-frame jump
+    jump = (steps > jump_px) & (dt <= 1.5 * med_dt)
+ 
+    i = 0
+    while i < n - 1:
+        if not jump[i]:
+            i += 1
+            continue
+        base_x, base_y = xs[i], ys[i]  # last good position before the jump
+        end = None
+        for j in range(i + 1, min(i + 1 + max_frames, n - 1)):
+            if jump[j] and np.hypot(xs[j + 1] - base_x, ys[j + 1] - base_y) <= return_px:
+                end = j  # frames i+1 .. j are the excursion
+                break
+        if end is None:
+            i += 1
+            continue
+        keep[i + 1:end + 1] = False
+        removed.append((float(times[i + 1]), float(times[end])))
+        if debug:
+            print(f"Removed tracking excursion {round(times[i + 1], 2)}s - {round(times[end], 2)}s "
+                  f"({end - i} frames)")
+        i = end + 1
+ 
+    return keep, removed
+
+# ==============================================================================
 # GEOMETRIC VALIDATION
 # ==============================================================================
 def is_path_valid(p1, p2, inner_poly):
@@ -252,10 +310,11 @@ def draw_custom_cv2_plot(times, xs, ys, uniform_times, x_filtered, y_filtered, f
 # ==============================================================================
 # MAIN PROCESSING LOGIC
 # ==============================================================================
-def process_trajectory(csv_path, config_path=None, output_path=None, median_window=5, savgol_window=31, show_plot=True, use_plotly=False, debug=True):
+def process_trajectory(csv_path, config_path=None, output_path=None, median_window=5, savgol_window=31, show_plot=True, use_plotly=False, debug=True, remove_excursions=True):
     """
-    Reads a trajectory CSV, crops to a 5-minute valid window, applies GEOMETRICALLY SAFE 
-    interpolation, removes outliers, applies a low-pass filter, and saves the cleaned data.
+    Reads a trajectory CSV, crops to a 5-minute valid window, removes short tracking
+    excursions, applies GEOMETRICALLY SAFE interpolation, removes outliers,
+    applies a low-pass filter, and saves the cleaned data.
     """
     if not os.path.exists(csv_path):
         print(f"ERROR: CSV file not found: {csv_path}")
@@ -320,7 +379,21 @@ def process_trajectory(csv_path, config_path=None, output_path=None, median_wind
     if len(times) < 10:
         print("ERROR: Not enough data left after cropping. Aborting.")
         return
-
+    
+    # --- 2.4 [MOD] TRACKING EXCURSION REMOVAL ---
+    excursions = []
+    if remove_excursions:
+        keep_mask, excursions = remove_tracking_excursions(times, xs, ys, debug=debug)
+        n_excursion_points = int(np.sum(~keep_mask))
+        if excursions:
+            print(f"Removed {len(excursions)} tracking excursions ({n_excursion_points} points); "
+                  f"they will be interpolated.")
+        times = times[keep_mask]
+        xs = xs[keep_mask]
+        ys = ys[keep_mask]
+    else:
+        n_excursion_points = 0
+    
     # --- 2.5 TELEPORTATION & SPIKE REMOVAL (ROBUST LOCAL CONSENSUS) ---
     MAX_SPEED_PX_S = 1000.0  # Maximum physiological speed
     
@@ -500,6 +573,7 @@ def process_trajectory(csv_path, config_path=None, output_path=None, median_wind
             f.write(f"--------------------------------------\n")
             f.write(f"Valid tracking window start: {round(t_start, 2)}s\n")
             f.write(f"Valid tracking window end:   {round(t_end, 2)}s\n")
+            f.write(f"Tracking excursions removed: {len(excursions)} ({n_excursion_points} points)\n")  # [MOD]
             f.write(f"Teleportation spikes removed: {spikes_removed}\n")
             f.write(f"Physically impossible gaps rejected: {invalid_jumps}\n")
             
@@ -528,6 +602,7 @@ def process_trajectory(csv_path, config_path=None, output_path=None, median_wind
     filter_stats = {
         "Valid_Window_Start_s": round(float(t_start), 2),
         "Valid_Window_End_s": round(float(t_end), 2),
+        "Tracking_Excursions_Removed": int(len(excursions)),  # [MOD]
         "Teleportation_Spikes_Removed": int(spikes_removed),
         "Wall_Jumps_Rejected": int(invalid_jumps),
         "Remaining_Points": int(len(times))
@@ -544,7 +619,8 @@ def process_trajectory(csv_path, config_path=None, output_path=None, median_wind
 @click.option("--plot", is_flag=True, help="Show the comparison graph")
 @click.option("--plotly", is_flag=True, help="Use interactive Plotly graph instead of OpenCV")
 @click.option("--debug", is_flag=True, help="Enable debug messages for spike detection")
-def cli(csv_path, config, output, median_window, savgol_window, plot, plotly, debug):
+@click.option("--no-excursion-filter", is_flag=True, help="Do not remove short tracking excursions")
+def cli(csv_path, config, output, median_window, savgol_window, plot, plotly, debug, no_excursion_filter):
     """
     Interpolates missing frames, applies geometric wall-collision checks, 
     crops data to the first 5 minutes of activity, and removes tracking outliers.
@@ -557,7 +633,8 @@ def cli(csv_path, config, output, median_window, savgol_window, plot, plotly, de
         savgol_window=savgol_window, 
         show_plot=plot,
         use_plotly=plotly,
-        debug=debug
+        debug=debug,
+        remove_excursions=not no_excursion_filter
     )
 
 if __name__ == '__main__':
