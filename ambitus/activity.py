@@ -52,7 +52,7 @@ def find_video_for_csv(csv_path, search_dir="data"):
         if p2.exists(): return str(p2)
     return None
 
-def classify_activities(csv_path, output_path=None, box_size=80, sad_threshold=20, high_active_speed=None, debug=False, search_dir="data"):
+def classify_activities(csv_path, output_path=None, box_size=80, sad_threshold=20, high_active_speed=35.0, debug=False, search_dir="data"):
     """
     Video-based activity classifier distinguishing Locomotion, Micro-movements, and Resting.
     States: 2 = High Active (Locomotion), 1 = Low Active (Grooming/Sniffing), 0 = Inactive (Resting)
@@ -115,7 +115,18 @@ def classify_activities(csv_path, output_path=None, box_size=80, sad_threshold=2
     dt = np.append(dt, dt[-1]) 
     dx = np.append(np.diff(xs), 0)
     dy = np.append(np.diff(ys), 0)
-    speeds = np.sqrt(dx**2 + dy**2) / dt
+    # speeds = np.sqrt(dx**2 + dy**2) / dt
+
+    # Speed over a centred 5-frame window: a 1-px diagonal flip (whole-pixel coordinates)
+    # gave 35.4 px/s over 1 frame, above the 35 px/s High-Active threshold.
+    SPEED_HALF_WINDOW = 2
+    n_pts = len(times)
+    idx = np.arange(n_pts)
+    lo = np.clip(idx - SPEED_HALF_WINDOW, 0, n_pts - 1)
+    hi = np.clip(idx + SPEED_HALF_WINDOW, 0, n_pts - 1)
+    span = times[hi] - times[lo]
+    span[span <= 0] = np.median(np.diff(times))
+    speeds = np.hypot(xs[hi] - xs[lo], ys[hi] - ys[lo]) / span # [MOD]
 
     states = np.zeros(len(times), dtype=int)
     sad_values = np.zeros(len(times), dtype=float) 
@@ -163,6 +174,18 @@ def classify_activities(csv_path, output_path=None, box_size=80, sad_threshold=2
     print(f"Extracting pixel variance (SAD) using an Intelligent Spatial Window with a {frame_delay}-frame delay...")
     
     for i in range(len(times)):
+        # [MOD] Keep video and CSV in sync: the filtered CSV has no rows for rejected wall-jump gaps,
+        # so skip the video frames of missing rows instead of assuming one row = one frame.
+        target_frame_idx = start_frame_idx + int(round((times[i] - times[0]) * fps))
+        while current_frame_idx < target_frame_idx:
+            if is_mpg:
+                try: reader.get_next_data()
+                except: break
+            else:
+                ret, _ = cap.read()
+                if not ret: break
+            current_frame_idx += 1
+        
         if is_mpg:
             try:
                 frame = reader.get_next_data()
@@ -173,6 +196,7 @@ def classify_activities(csv_path, output_path=None, box_size=80, sad_threshold=2
             ret, frame = cap.read()
 
         if not ret: break
+        current_frame_idx += 1  # [MOD] frame counter for the sync above
         
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         h, w = gray.shape
