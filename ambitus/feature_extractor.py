@@ -120,6 +120,208 @@ def normalize_angle_diff(diff):
     while diff > 180: diff -= 360
     return diff
 
+def detect_uturns_derivative(times, xs, ys, distances, states, fps):
+    """[MOD] Original section 6.B detector (derivative sign-change & cyclic 8-octant),
+    moved unchanged into a function so that only the selected U-turn method runs.
+    Returns (count, list of peak times in seconds)."""
+    HEADING_WINDOW = 1
+    MIN_MOVE_PX = 3.0
+    raw_angles_rad = np.full(len(distances), np.nan)
+
+    # 1. Compute raw angle only for valid movement (State == 2 and displacement >= 2px)
+    for i in range(len(distances)):
+        st = states[i] if i < len(states) else 0
+        # Calculate the angle between the current point and a point HEADING_WINDOW frames ahead
+        j = min(i + HEADING_WINDOW, len(xs) - 1)
+        ddx, ddy = xs[j] - xs[i], ys[j] - ys[i]
+        if st == 2 and np.hypot(ddx, ddy) >= MIN_MOVE_PX:
+            raw_angles_rad[i] = np.arctan2(ddy, ddx)
+
+    # 2. Zero-Order Hold: keep the last valid angle during stops
+    filled_angles_rad = np.zeros_like(raw_angles_rad)
+    last_valid_ang = 0.0
+    for a in raw_angles_rad:
+        if not np.isnan(a):
+            last_valid_ang = a
+            break
+
+    for i in range(len(raw_angles_rad)):
+        if not np.isnan(raw_angles_rad[i]):
+            last_valid_ang = raw_angles_rad[i]
+        filled_angles_rad[i] = last_valid_ang
+
+    # 3. Unwrap: create continuous angle signal by removing cyclic jumps
+    unwrapped_angles = np.unwrap(filled_angles_rad)
+
+    # 4. Smoothing with a larger time window (approx. 1 second = ~25 frames at 25 FPS)
+    smooth_window = max(5, int(fps * 1))
+    kernel = np.ones(smooth_window) / smooth_window
+    smoothed_heading_rad = np.convolve(unwrapped_angles, kernel, mode='same')
+
+    # 5. Determine cyclic 8-octant (strictly 1..8, no 0 direction)
+    # Convert to [0, 360) degrees
+    smoothed_deg = np.degrees(smoothed_heading_rad) % 360.0
+    # Add 22.5 degree offset so octant 1 is symmetric around East
+    shifted_deg = (smoothed_deg + 22.5) % 360.0
+    stable_headings = (shifted_deg // 45).astype(int) + 1  # Értékek: 1..8 ciklikusan
+
+    # 6. Angular velocity (derivative: dTheta / dt)
+    # This indicates the speed and direction of octant drift
+    heading_derivative = np.gradient(smoothed_heading_rad, times[:-1])
+
+    # 7. U-turn detection: ONLY based on zero-crossings of the derivative (sign changes)
+    u_turns = 0
+    u_turn_timestamps = []
+
+    ROT_THRESHOLD = np.radians(20.0)
+
+    last_rot_sign = 0
+    turn_anchor_octant = stable_headings[0]
+    turn_start_time = times[0]
+    max_rot_speed = 0.0
+    peak_turn_time = times[0]
+    in_active_turn = False
+
+    for i in range(1, len(heading_derivative)):
+        rot_speed = heading_derivative[i]
+        abs_speed = abs(rot_speed)
+
+            # Current rotational state
+        if rot_speed > ROT_THRESHOLD:
+            current_sign = 1   # Oktánsok növekednek (CW)
+        elif rot_speed < -ROT_THRESHOLD:
+            current_sign = -1  # Oktánsok csökkennek (CCW)
+        else:
+            current_sign = 0   # Egyenes haladás vagy megállás
+
+        # ----------------------------------------------------------------------
+        # A) DURING ACTIVE ROTATION
+        # ----------------------------------------------------------------------
+        if current_sign != 0:
+            if not in_active_turn:
+                # Rotation just started
+                in_active_turn = True
+                turn_start_time = times[i - 1]
+                max_rot_speed = abs_speed
+                peak_turn_time = times[i]
+                last_rot_sign = current_sign
+            else:
+                # Track rotational peak (where rotation is fastest)
+                if abs_speed > max_rot_speed:
+                    max_rot_speed = abs_speed
+                    peak_turn_time = times[i]
+
+                # If rotation direction reverses during the maneuver
+                if current_sign != last_rot_sign:
+                    last_rot_sign = current_sign
+
+        # ----------------------------------------------------------------------
+        # B) ROTATION SUBSIDED (returned to straight or stopped)
+        # ----------------------------------------------------------------------
+        else:
+            if in_active_turn:
+                # Maneuver ended: evaluate net angular change
+                curr_octant = stable_headings[i]
+                octant_diff = abs(curr_octant - turn_anchor_octant)
+                if octant_diff > 4:
+                    octant_diff = 8 - octant_diff
+
+                # Exactly opposite octant reached (180 deg, diff == 4)?
+                if octant_diff == 4:
+                    u_turns += 1
+                    # The actual U-turn time is at the rotational speed peak
+                    u_turn_timestamps.append(round(float(peak_turn_time), 2))                   
+                    # Update anchor octant
+                    turn_anchor_octant = curr_octant
+
+                # If not 180 deg (e.g. 90 deg turn), update anchor
+                elif octant_diff >= 2:
+                    turn_anchor_octant = curr_octant
+
+                # Reset for next straight segment
+                in_active_turn = False
+                max_rot_speed = 0.0
+                last_rot_sign = 0
+
+    return u_turns, u_turn_timestamps
+
+# ==============================================================================
+# [MOD] U-TURN DETECTION: CLEAR HEADING INTERVALS
+# ==============================================================================
+# "intervals": clear-heading-interval detector (below). "derivative": original 6.B detector.
+UTURN_METHOD = "intervals"
+UTURN_MIN_SPEED_PX_FRAME = 2.0   # clear movement: >= 2 px/frame (3-frame average) = 50 px/s at 25 fps
+UTURN_MIN_BOUT_PX = 15.0         # a movement bout needs at least this net displacement
+UTURN_HEADING_PIECE_PX = 20.0    # long bouts are cut into pieces of this path length, one heading each
+UTURN_MIN_ANGLE_DEG = 120.0      # consecutive headings differing by at least this = U-turn
+UTURN_MAX_GAP_FRAMES = 2         # slower frames allowed inside a bout
+UTURN_LOOKBACK_PIECES = 2        # compare each heading with the previous 1..N headings
+UTURN_LOOKBACK_MAX_GAP_S = 1.0   # look back further than 1 heading only across gaps shorter than this
+
+
+def find_movement_bouts(xs, ys, min_speed=UTURN_MIN_SPEED_PX_FRAME, min_len=UTURN_MIN_BOUT_PX,
+                        max_gap=UTURN_MAX_GAP_FRAMES):
+    """Bouts of clear movement: runs of frames moving at >= min_speed px/frame (centred 3-frame
+    average), allowing up to max_gap slower frames inside, with net displacement >= min_len px.
+    Returns a list of (first_index, last_index). Independent of the activity state."""
+    n = len(xs)
+    step = np.zeros(n)
+    if n >= 3:
+        step[1:-1] = np.hypot(xs[2:] - xs[:-2], ys[2:] - ys[:-2]) / 2.0
+    fast = step >= min_speed
+    bouts, i = [], 0
+    while i < n:
+        if not fast[i]:
+            i += 1
+            continue
+        j, gap = i, 0
+        while j + 1 < n and (fast[j + 1] or gap < max_gap):
+            gap = 0 if fast[j + 1] else gap + 1
+            j += 1
+        while j > i and not fast[j]:
+            j -= 1
+        # if np.hypot(xs[j] - xs[i], ys[j] - ys[i]) >= min_len:
+        if np.max(np.hypot(xs[i:j + 1] - xs[i], ys[i:j + 1] - ys[i])) >= min_len: #[MOD]
+            bouts.append((i, j))
+        i = j + 1
+    return bouts
+
+
+def detect_uturns_intervals(times, xs, ys, min_speed=UTURN_MIN_SPEED_PX_FRAME, min_len=UTURN_MIN_BOUT_PX,
+                            piece_px=UTURN_HEADING_PIECE_PX, min_angle=UTURN_MIN_ANGLE_DEG,
+                            lookback=UTURN_LOOKBACK_PIECES, lookback_max_gap_s=UTURN_LOOKBACK_MAX_GAP_S):
+    """Clear-heading-interval U-turn detector.
+    1. Find bouts of clear movement (find_movement_bouts).
+    2. Give each bout headings: one per piece_px of path (a short bout gets one heading).
+    3. Walk through all headings in time order; when the next heading differs from the current one
+       by >= min_angle degrees, count a U-turn. The turn happened in the gap between the two
+       headings (this also counts in-place turns once the rat moves off in the opposite direction).
+    Returns (count, list of (gap_start_s, gap_end_s))."""
+    headings = []  # (first_index, last_index, heading_deg)
+    for (i, j) in find_movement_bouts(xs, ys, min_speed, min_len):
+        pieces, a = [], i
+        for k in range(i + 1, j + 1):
+            if np.hypot(xs[k] - xs[a], ys[k] - ys[a]) >= piece_px:
+                pieces.append((a, k, np.degrees(np.arctan2(ys[k] - ys[a], xs[k] - xs[a]))))
+                a = k
+        if not pieces:
+            pieces.append((i, j, np.degrees(np.arctan2(ys[j] - ys[i], xs[j] - xs[i]))))
+        headings += pieces
+    events = []
+    start = 0
+    for n in range(1, len(headings)):
+        for back in range(1, lookback + 1):
+            m = n - back
+            if m < start:
+                break
+            if back > 1 and times[headings[m + 1][0]] - times[headings[m][1]] > lookback_max_gap_s:
+                break
+            if abs(normalize_angle_diff(headings[n][2] - headings[m][2])) >= min_angle:
+                events.append((round(float(times[headings[n - 1][1]]), 2), round(float(times[headings[n][0]]), 2)))
+                start = n
+                break
+    return len(events), events
+
 # ==============================================================================
 # DEBUG VISUALIZATION
 # ==============================================================================
@@ -364,8 +566,8 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     states_for_dist = raw_states[:-1] if len(raw_states) > len(distances) else raw_states
     states_for_dist = np.resize(states_for_dist, len(distances))
     
-    dist_high_active = np.sum(distances[states_for_dist == 2])
-    dist_low_active = np.sum(distances[states_for_dist == 1])
+    # dist_high_active = np.sum(distances[states_for_dist == 2])
+    # dist_low_active = np.sum(distances[states_for_dist == 1])
 
     # --- 4. PHASE STABILIZATION (1s Majority Voting for STATES) ---
     avg_dt = total_time / len(times) if len(times) > 0 else 0.04
@@ -399,6 +601,10 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
         if start < end: smoothed_states[start:end] = one_second_states[i]
 
     states = smoothed_states
+
+    # [MOD] High/Low-Active distance with the same 1-s voted states as the times and phases
+    dist_high_active = np.sum(distances[states == 2])
+    dist_low_active = np.sum(distances[states == 1])
 
     # --- 5. PHASE ANALYSIS ---
     high_active_phases, low_active_phases, inactive_phases = [], [], []
@@ -460,14 +666,32 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     # ==============================================================================
 
     # --- 6. DIRECTIONAL STABILIZATION (1s Majority Voting for CW/CCW) ---
+
+    HEADING_WINDOW = 5      # frames (0.2 s at 25 fps)
+    MIN_TANG_PX = 2.0       # tangential movement over the window (~10 px/s)
+    cx, cy = arena_center
+
     raw_directions = np.zeros(len(xs), dtype=int)
-    angles_to_center = [calculate_angle(arena_center, (x, y)) for x, y in zip(xs, ys)]
+    # angles_to_center = [calculate_angle(arena_center, (x, y)) for x, y in zip(xs, ys)]
     
-    for i in range(len(xs) - 1):
-        angle_diff = normalize_angle_diff(angles_to_center[i+1] - angles_to_center[i])
-        if angle_diff > 0.5: raw_directions[i] = 1 
-        elif angle_diff < -0.5: raw_directions[i] = -1  
+    # for i in range(len(xs) - 1):
+    #     angle_diff = normalize_angle_diff(angles_to_center[i+1] - angles_to_center[i])
+    #     if angle_diff > 0.5: raw_directions[i] = 1 
+    #     elif angle_diff < -0.5: raw_directions[i] = -1  
             
+    for i in range(len(xs) - 1):
+        j = min(i + HEADING_WINDOW, len(xs) - 1)
+        rx, ry = xs[i] - cx, ys[i] - cy
+        r = np.hypot(rx, ry)
+        if r < 1e-6:
+            continue
+        ddx, ddy = xs[j] - xs[i], ys[j] - ys[i]
+        tang = (rx * ddy - ry * ddx) / r   # px; > 0 = clockwise on screen (image y axis points down)
+        if tang > MIN_TANG_PX:
+            raw_directions[i] = 1
+        elif tang < -MIN_TANG_PX:
+            raw_directions[i] = -1
+
     if len(raw_directions) > 1: raw_directions[-1] = raw_directions[-2]
 
     smoothed_directions = np.zeros(len(xs), dtype=int)
@@ -502,122 +726,15 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
     dir_asymmetry = abs(cw_dist - ccw_dist) / (cw_dist + ccw_dist) if (cw_dist + ccw_dist) > 0 else 0.0
 
     # --------------------------------------------------------------------------
-    # 6.B. DERIVATIVE SIGN-CHANGE & CYCLIC 8-OCTANT U-TURN DETECTION
+    # 6.B. U-TURN DETECTION
     # --------------------------------------------------------------------------
-    MIN_MOVE_PX = 4.0
-    raw_angles_rad = np.full(len(distances), np.nan)
+    
 
-    # 1. Compute raw angle only for valid movement (State == 2 and displacement >= 2px)
-    for i in range(len(distances)):
-        st = states[i] if i < len(states) else 0
-        if st == 2 and distances[i] >= MIN_MOVE_PX:
-            raw_angles_rad[i] = np.arctan2(dy[i], dx[i])
-
-    # 2. Zero-Order Hold: keep the last valid angle during stops
-    filled_angles_rad = np.zeros_like(raw_angles_rad)
-    last_valid_ang = 0.0
-    for a in raw_angles_rad:
-        if not np.isnan(a):
-            last_valid_ang = a
-            break
-
-    for i in range(len(raw_angles_rad)):
-        if not np.isnan(raw_angles_rad[i]):
-            last_valid_ang = raw_angles_rad[i]
-        filled_angles_rad[i] = last_valid_ang
-
-    # 3. Unwrap: create continuous angle signal by removing cyclic jumps
-    unwrapped_angles = np.unwrap(filled_angles_rad)
-
-    # 4. Smoothing with a larger time window (approx. 1 second = ~25 frames at 25 FPS)
-    smooth_window = max(5, int(fps * 1))
-    kernel = np.ones(smooth_window) / smooth_window
-    smoothed_heading_rad = np.convolve(unwrapped_angles, kernel, mode='same')
-
-    # 5. Determine cyclic 8-octant (strictly 1..8, no 0 direction)
-    # Convert to [0, 360) degrees
-    smoothed_deg = np.degrees(smoothed_heading_rad) % 360.0
-    # Add 22.5 degree offset so octant 1 is symmetric around East
-    shifted_deg = (smoothed_deg + 22.5) % 360.0
-    stable_headings = (shifted_deg // 45).astype(int) + 1  # Értékek: 1..8 ciklikusan
-
-    # 6. Angular velocity (derivative: dTheta / dt)
-    # This indicates the speed and direction of octant drift
-    heading_derivative = np.gradient(smoothed_heading_rad, times[:-1])
-
-    # 7. U-turn detection: ONLY based on zero-crossings of the derivative (sign changes)
-    u_turns = 0
-    u_turn_timestamps = []
-
-    ROT_THRESHOLD = np.radians(2.0)  # ~2.0 deg/frame minimum rotational speed
-
-    last_rot_sign = 0
-    turn_anchor_octant = stable_headings[0]
-    turn_start_time = times[0]
-    max_rot_speed = 0.0
-    peak_turn_time = times[0]
-    in_active_turn = False
-
-    for i in range(1, len(heading_derivative)):
-        rot_speed = heading_derivative[i]
-        abs_speed = abs(rot_speed)
-
-            # Current rotational state
-        if rot_speed > ROT_THRESHOLD:
-            current_sign = 1   # Oktánsok növekednek (CW)
-        elif rot_speed < -ROT_THRESHOLD:
-            current_sign = -1  # Oktánsok csökkennek (CCW)
-        else:
-            current_sign = 0   # Egyenes haladás vagy megállás
-
-        # ----------------------------------------------------------------------
-        # A) DURING ACTIVE ROTATION
-        # ----------------------------------------------------------------------
-        if current_sign != 0:
-            if not in_active_turn:
-                # Rotation just started
-                in_active_turn = True
-                turn_start_time = times[i - 1]
-                max_rot_speed = abs_speed
-                peak_turn_time = times[i]
-                last_rot_sign = current_sign
-            else:
-                # Track rotational peak (where rotation is fastest)
-                if abs_speed > max_rot_speed:
-                    max_rot_speed = abs_speed
-                    peak_turn_time = times[i]
-
-                # If rotation direction reverses during the maneuver
-                if current_sign != last_rot_sign:
-                    last_rot_sign = current_sign
-
-        # ----------------------------------------------------------------------
-        # B) ROTATION SUBSIDED (returned to straight or stopped)
-        # ----------------------------------------------------------------------
-        else:
-            if in_active_turn:
-                # Maneuver ended: evaluate net angular change
-                curr_octant = stable_headings[i]
-                octant_diff = abs(curr_octant - turn_anchor_octant)
-                if octant_diff > 4:
-                    octant_diff = 8 - octant_diff
-
-                # Exactly opposite octant reached (180 deg, diff == 4)?
-                if octant_diff == 4:
-                    u_turns += 1
-                    # The actual U-turn time is at the rotational speed peak
-                    u_turn_timestamps.append(round(float(peak_turn_time), 2))                   
-                    # Update anchor octant
-                    turn_anchor_octant = curr_octant
-
-                # If not 180 deg (e.g. 90 deg turn), update anchor
-                elif octant_diff >= 2:
-                    turn_anchor_octant = curr_octant
-
-                # Reset for next straight segment
-                in_active_turn = False
-                max_rot_speed = 0.0
-                last_rot_sign = 0
+    # [MOD] Select the U-turn method. The derivative result above is kept when UTURN_METHOD == "derivative".
+    if UTURN_METHOD == "intervals":
+        u_turns, u_turn_timestamps = detect_uturns_intervals(times, xs, ys)
+    else:
+        u_turns, u_turn_timestamps = detect_uturns_derivative(times, xs, ys, distances, states, fps)
 
     # --- 7. SPATIAL ANALYSIS (Corners vs Corridors) ---
     corner_time = 0.0
@@ -712,6 +829,13 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
         for i in range(len(times)-1):
             writer.writerow([times[i], xs[i], ys[i], speeds[i], states[i], smoothed_directions[i], corner_flags[i]])
 
+    # [MOD] U-turn times for checking against hand labels (video time, seconds).
+    # intervals: "gap_start-gap_end" (the turn happened inside the gap); derivative: peak time.
+    with open(output_json_path.replace('.json', '_uturns.txt'), 'w') as f:
+        f.write(f"# U-turn method: {UTURN_METHOD}\n")
+        for ut in u_turn_timestamps:
+            f.write(f"{ut[0]}-{ut[1]}\n" if isinstance(ut, tuple) else f"{ut}\n")
+
     # --- 10. JSON COMPILATION ---
     features = {
         "Metadata": {
@@ -734,8 +858,10 @@ def extract_features(csv_path, config_path, output_json_path, debug_html=False, 
             "Total_Inactivity_Time_s": round(total_inactive_time, 2),
             "Average_Speed_px_s": round(float(total_distance / total_time), 2) if total_time > 0 else 0.0,
             "Average_Speed_cm_s": round(float((total_distance * cm_px_ratio) / total_time), 2) if total_time > 0 else 0.0,
-            "Average_Activity_Speed_px_s": round(float(total_distance / safe_sum(all_active_phases, 'duration')), 2) if safe_sum(all_active_phases, 'duration') > 0 else 0.0,
-            "Average_Activity_Speed_cm_s": round(float((total_distance * cm_px_ratio) / safe_sum(all_active_phases, 'duration')), 2) if safe_sum(all_active_phases, 'duration') > 0 else 0.0,
+            # "Average_Activity_Speed_px_s": round(float(total_distance / safe_sum(all_active_phases, 'duration')), 2) if safe_sum(all_active_phases, 'duration') > 0 else 0.0,
+            # "Average_Activity_Speed_cm_s": round(float((total_distance * cm_px_ratio) / safe_sum(all_active_phases, 'duration')), 2) if safe_sum(all_active_phases, 'duration') > 0 else 0.0,
+            "Average_Activity_Speed_px_s": round(float(safe_sum(all_active_phases, 'distance') / safe_sum(all_active_phases, 'duration')), 2) if safe_sum(all_active_phases, 'duration') > 0 else 0.0, #[MOD]
+            "Average_Activity_Speed_cm_s": round(float((safe_sum(all_active_phases, 'distance') * cm_px_ratio) / safe_sum(all_active_phases, 'duration')), 2) if safe_sum(all_active_phases, 'duration') > 0 else 0.0, #[MOD]
             "Total_Activity_Number": len(all_active_phases),
             "Total_Inactivity_Number": len(inactive_phases),
             "Mean_Activity_Phase_Duration_s": round(safe_mean(all_active_phases, 'duration'), 2),
