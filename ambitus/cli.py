@@ -64,7 +64,7 @@ def load_video(video_path, show):
 @click.option("--skip-seconds", default=0.0, help="Seconds to skip at the start")
 @click.option("--min-area", default=100, help="Minimum area")
 @click.option("--method", type=click.Choice(['simple', 'static'], case_sensitive=False), default='static', help="Tracking method: simple (MOG2) or static (Masked Running Average).")
-@click.option("--bg-method", type=click.Choice(['quiet', 'global'], case_sensitive=False), default='quiet', help="Background generation method for static tracker (quiet = 5s stable window, global = median of entire video).")
+@click.option("--bg-method", type=click.Choice(['quiet', 'global', 'zone'], case_sensitive=False), default='quiet', help="Background generation method for static tracker (quiet = 5s stable window, global = median of entire video).")
 def analyze(path, config, show, debug, skip_seconds, min_area, method, bg_method):
     """ Process video using the optimized, clean tracking methods. """
     track(
@@ -143,7 +143,8 @@ def heatmap_cmd(csv_path, video_dir, output, sigma, alpha, show):
 @click.option("--plotly", is_flag=True, help="Use interactive Plotly graph instead of OpenCV")
 @click.option("--config", default="arena_config_poly.json", help="Path to ROI config JSON file")
 @click.option("--debug", is_flag=True, help="Enable debug messages for spike detection")
-def filter_cmd(csv_path, config, output, median_window, savgol_window, plot, plotly, debug):
+@click.option("--no-excursion-filter", is_flag=True, help="Do not remove short tracking excursions")
+def filter_cmd(csv_path, config, output, median_window, savgol_window, plot, plotly, debug, no_excursion_filter):
     """
     Interpolates missing frames, removes tracking outliers, and applies a low-pass filter to the trajectory CSV.
     Outputs integer coordinates.
@@ -156,7 +157,8 @@ def filter_cmd(csv_path, config, output, median_window, savgol_window, plot, plo
         savgol_window=savgol_window, 
         show_plot=plot,
         use_plotly=plotly,
-        debug=debug
+        debug=debug,
+        remove_excursions=not no_excursion_filter
     )
 
 
@@ -170,7 +172,8 @@ def filter_cmd(csv_path, config, output, median_window, savgol_window, plot, plo
 @click.option("--heatmap", is_flag=True, help="Generate heatmap for filtered trajectories")
 @click.option("--config", default="arena_config_poly.json", help="Path to ROI config JSON file")
 @click.option("--debug", is_flag=True, help="Enable debug messages for spike detection")
-def filter_dir_cmd(results_dir, output_dir, median_window, savgol_window, plot, plotly, heatmap, config, debug):
+@click.option("--no-excursion-filter", is_flag=True, help="Do not remove short tracking excursions")
+def filter_dir_cmd(results_dir, output_dir, median_window, savgol_window, plot, plotly, heatmap, config, debug, no_excursion_filter):
     """Apply trajectory filtering to all CSV files in results subdirectories."""
     root_dir = Path(results_dir).resolve()
     csv_files = list(root_dir.rglob('*_trajectory.csv'))
@@ -195,7 +198,8 @@ def filter_dir_cmd(results_dir, output_dir, median_window, savgol_window, plot, 
             savgol_window=savgol_window,
             show_plot=plot,
             use_plotly=plotly,
-            debug=debug
+            debug=debug,
+            remove_excursions=not no_excursion_filter
         )
         
         if heatmap:
@@ -226,7 +230,7 @@ def filter_dir_cmd(results_dir, output_dir, median_window, savgol_window, plot, 
 @click.option("--base-image", default="base_reference.jpg", type=click.Path(exists=True), help="The original reference image")
 @click.option("--base-config", default="arena_config_poly.json", help="The original ROI JSON file")
 @click.option("--method", type=click.Choice(['simple', 'static'], case_sensitive=False), default='static', help="Tracking method")
-@click.option("--bg-method", type=click.Choice(['quiet', 'global'], case_sensitive=False), default='quiet', help="Background generation method for static tracker")
+@click.option("--bg-method", type=click.Choice(['quiet', 'global', 'zone'], case_sensitive=False), default='quiet', help="Background generation method for static tracker")
 @click.option("--min-area", default=100, help="Minimum area")
 @click.option("--skip-seconds", default=0.0, help="Seconds to skip at the start")
 @click.option("--median-window", default=5, help="Window size for outlier removal")
@@ -238,9 +242,10 @@ def filter_dir_cmd(results_dir, output_dir, median_window, savgol_window, plot, 
 @click.option("--out-dir", default=None, help="Output directory override")
 @click.option("--export", is_flag=True, help="Update Master Excel and specific folder Excels after running")
 @click.option("--backtrack", is_flag=True, help="Use backtracking: finds light-on at the end and tracks exactly 300s before it. Forces global background.")
+@click.option("--no-excursion-filter", is_flag=True, help="Do not remove short tracking excursions")
 def run_pipeline(video_path, base_image, base_config, method, bg_method,
                  min_area, skip_seconds, median_window, savgol_window,
-                 sigma, alpha, show, debug, out_dir, export, backtrack):
+                 sigma, alpha, show, debug, out_dir, export, backtrack, no_excursion_filter):
     """Run the complete pipeline: align ROI, track, filter, and generate heatmap."""
   
     v_path = Path(video_path).resolve()
@@ -276,7 +281,7 @@ def run_pipeline(video_path, base_image, base_config, method, bg_method,
     track(video_path, aligned_config, method, bg_method, backtrack, show, debug, skip_seconds, min_area, output_dir=result_dir)
     
     click.echo("Step 3: Filtering trajectory...")
-    process_trajectory(csv_file, aligned_config, None, median_window, savgol_window, show, True, debug=debug)
+    process_trajectory(csv_file, aligned_config, None, median_window, savgol_window, show, True, debug=debug, remove_excursions=not no_excursion_filter)
     
     click.echo("Step 4: Generating heatmap...")
     generate_heatmap(filtered_csv, None, sigma, alpha, show, video_dir=str(v_path.parent))
@@ -308,7 +313,7 @@ def run_pipeline(video_path, base_image, base_config, method, bg_method,
 @click.option("--base-image", default="base_reference.jpg", type=click.Path(exists=True), help="The original reference image")
 @click.option("--base-config", default="arena_config_poly.json", help="The original ROI JSON file")
 @click.option("--method", type=click.Choice(['simple', 'static'], case_sensitive=False), default='static', help="Tracking method")
-@click.option("--bg-method", type=click.Choice(['quiet', 'global'], case_sensitive=False), default='quiet', help="Background generation method for static tracker")
+@click.option("--bg-method", type=click.Choice(['quiet', 'global', 'zone'], case_sensitive=False), default='quiet', help="Background generation method for static tracker")
 @click.option("--min-area", default=100, help="Minimum area")
 @click.option("--skip-seconds", default=0.0, help="Seconds to skip at the start")
 @click.option("--median-window", default=5, help="Window size for outlier removal")
@@ -318,7 +323,9 @@ def run_pipeline(video_path, base_image, base_config, method, bg_method,
 @click.option("--show", is_flag=True, help="Display results")
 @click.option("--debug", is_flag=True, help="Show debug views")
 @click.option("--backtrack", is_flag=True, help="Use backtracking: finds light-on at the end and tracks exactly 300s before it. Forces global background.")
-def run_dir_pipeline(video_dir, base_image, base_config, method, bg_method, min_area, skip_seconds, median_window, savgol_window, sigma, alpha, show, debug, backtrack):
+@click.option("--no-excursion-filter", is_flag=True, help="Do not remove short tracking excursions")
+def run_dir_pipeline(video_dir, base_image, base_config, method, bg_method, min_area, skip_seconds,
+                      median_window, savgol_window, sigma, alpha, show, debug, backtrack, no_excursion_filter):
     """Run the complete pipeline on all videos in a directory."""
 
     root_data_dir = Path(video_dir).resolve()
@@ -340,7 +347,7 @@ def run_dir_pipeline(video_dir, base_image, base_config, method, bg_method, min_
         rel_path = video_path.parent.relative_to(root_data_dir)
         target_result_dir = str(results_root_dir / rel_path / video_path.stem)
         run_pipeline.callback(str(video_path), base_image, base_config, method, bg_method, min_area, skip_seconds,
-                               median_window, savgol_window, sigma, alpha, show, debug, target_result_dir, False, backtrack)
+                               median_window, savgol_window, sigma, alpha, show, debug, target_result_dir, False, backtrack, no_excursion_filter)
         
     # export to Excel after processing all videos
     click.echo("Step 7: Exporting features to Excel...")
@@ -376,9 +383,9 @@ def calibrate_cmd(results_dir, output):
 @cli.command(name="activity")
 @click.argument("csv_path", type=click.Path())
 @click.option("--output", default=None, help="Output CSV filename (optional)")
-@click.option("--box-size", default=120, help="Size of the box around the current position to calculate SAD (default: 80)")
-@click.option("--sad", default=20, help="SAD threshold for classifying Low Active vs Inactive (default:100)")
-@click.option("--speed", default=None, help="Speed threshold (px/s) for classifying High Active vs Low Active (default: None - global threshold)")
+@click.option("--box-size", default=80, help="Size of the box around the current position to calculate SAD (default: 80)")
+@click.option("--sad", default=20, help="SAD threshold for classifying Low Active vs Inactive (default:20)")
+@click.option("--speed", default=35.0, help="Speed threshold (px/s) for classifying High Active vs Low Active (default: 35.0)")
 @click.option("--debug", is_flag=True, help="show debug window")
 @click.option("--search-dir", default="data", help="Directory to search for the original video file (default: data)")
 def activity_cmd(csv_path, output, box_size, sad, speed, debug, search_dir):
