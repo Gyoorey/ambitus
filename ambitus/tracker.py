@@ -230,6 +230,196 @@ def generate_global_median_background(video_path, is_mpg, reader, cap, fps, tota
     
     return median_bg
 
+# ==============================================================================
+# [MOD] BACKGROUND GENERATION: ZONE BACKGROUND (bg_method='zone')
+# ==============================================================================
+# The rat is always dropped in the top-right corner, so at the start of the video the other three
+# quarters of the arena are empty. They are taken from the start of the video, before the rat first
+# enters them. The top-right quarter (hands, food stick, rat drop) is taken from the first frames
+# after that in which the rat is clearly in another quarter.
+ZONE_SCAN_STEP_S = 0.2         # the video is read from the start; one sample every 0.2 s
+ZONE_REF_S = 2.0               # first 2 s: reference for "something entered the three quarters"
+ZONE_EARLY_MAX_S = 40.0        # the three quarters are taken from at most the first 40 s
+ZONE_EARLY_GUARD_S = 1.0       # samples within 1 s before the rat enters the three quarters are dropped
+ZONE_CORNER_SAMPLES = 25       # top-right quarter: median of the first 25 safe samples ...
+ZONE_CORNER_SPACING_S = 0.4    # ... at least 0.4 s apart
+ZONE_CORNER_MIN_SAMPLES = 5    # fewer -> warning, the top-right quarter keeps the start-of-video image
+ZONE_SAFE_MARGIN_PX = 30       # the rat blob, grown by this margin, must not touch the top-right quarter
+ZONE_LIGHT_TOL = 8.0           # samples whose mean brightness differs more than this from the start are skipped
+ZONE_FEATHER_PX = 15           # width of the blend between the top-right quarter and the rest (no seam)
+
+
+def get_corner_zone_mask(config, frame_shape):
+    """Top-right quarter of the arena: right of and above the centre of the outer polygon."""
+    h, w = frame_shape[:2]
+    outer = np.array(config["outer_poly"], dtype=np.float64)
+    if len(outer) > 1 and np.allclose(outer[0], outer[-1]):
+        outer = outer[:-1]
+    cx, cy = outer.mean(axis=0)
+    mask = np.zeros((h, w), dtype=np.uint8)
+    mask[:int(round(cy)), int(round(cx)):] = 255
+    return mask, (cx, cy)
+
+
+def _zone_foreground(frame, background, area_mask):
+    """Same thresholding and clean-up as the tracking loop, limited to area_mask."""
+    _, fg = cv2.threshold(cv2.absdiff(frame, background), 25, 255, cv2.THRESH_BINARY)
+    fg = cv2.bitwise_and(fg, area_mask)
+    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, np.ones((9, 1), np.uint8))
+    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, np.ones((1, 9), np.uint8))
+    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=3)
+    return fg
+
+
+def _zone_blobs(fg, min_area, inner_pts):
+    """Contours of at least min_area whose centre is not inside the inner polygon."""
+    blobs = []
+    for c in cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
+        if cv2.contourArea(c) < min_area:
+            continue
+        M = cv2.moments(c)
+        if M["m00"] == 0:
+            continue
+        if cv2.pointPolygonTest(inner_pts, (M["m10"] / M["m00"], M["m01"] / M["m00"]), False) >= 0:
+            continue
+        blobs.append(c)
+    return blobs
+
+
+def generate_zone_background(is_mpg, reader, cap, fps, total_frames, config, min_area, end_frame=None):
+    """
+    Zone background, read sequentially from the start of the video.
+    Phase 1 (three quarters): reference = median of the first ZONE_REF_S seconds. Samples are collected
+      until something rat-sized appears in the three quarters (the rat leaves the top-right quarter),
+      at most ZONE_EARLY_MAX_S. Median of these samples = background of the three quarters.
+    Phase 2 (top-right quarter): from then on, a sample is safe when the rat is found in the three
+      quarters (against the phase-1 background) at least ZONE_SAFE_MARGIN_PX away from the top-right
+      quarter. Median of the first ZONE_CORNER_SAMPLES safe samples = background of that quarter.
+      These are the earliest frames possible, so both parts are close in time; the border is blended.
+    Returns (background float32, info dict) or (None, info).
+    """
+    info = {"summary": "zone background failed"}
+    if total_frames <= 0:
+        total_frames = reader.count_frames() if is_mpg else int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if end_frame is None or end_frame <= 0 or end_frame > total_frames:
+        end_frame = total_frames
+    step = max(1, int(round(ZONE_SCAN_STEP_S * fps)))
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
+
+    def samples():
+        """(time_s, mean brightness, preprocessed frame) for every step-th frame, read sequentially."""
+        if is_mpg:
+            try:
+                reader.set_image_index(0)
+            except Exception:
+                pass
+        else:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        for idx in range(end_frame):
+            if is_mpg:
+                try:
+                    frame = cv2.cvtColor(reader.get_next_data(), cv2.COLOR_RGB2BGR)
+                except Exception:
+                    return
+            else:
+                ret, frame = cap.read()
+                if not ret:
+                    return
+            if idx % step:
+                continue
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            yield idx / fps, float(np.mean(gray)), cv2.GaussianBlur(clahe.apply(gray), (7, 7), 0)
+
+    print(f"Generating ZONE background (three quarters from the start of the video, top-right quarter "
+          f"when the rat is elsewhere)...")
+    stream = samples()
+
+    # --- Phase 1: the three quarters, before the rat enters them ---
+    early, early_t, early_b, ref, ref_brightness, ref_bg = [], [], [], None, None, None
+    zone_mask = roi_mask = other_zones = inner_pts = None
+    t_enter = None
+    for t, bright, f in stream:
+        if zone_mask is None:
+            zone_mask, _ = get_corner_zone_mask(config, f.shape)
+            roi_mask = create_poly_mask(config, f.shape)
+            other_zones = cv2.bitwise_and(roi_mask, cv2.bitwise_not(zone_mask))
+            inner_pts = np.array(config["inner_poly"], dtype=np.int32)
+        if t < ZONE_REF_S:
+            early.append(f); early_t.append(t); early_b.append(bright)
+            continue
+        if ref is None:
+            ref_bg = np.median(np.array(early), axis=0).astype(np.float32)
+            ref = cv2.convertScaleAbs(ref_bg)
+            ref_brightness = float(np.median(early_b))
+        if abs(bright - ref_brightness) > ZONE_LIGHT_TOL:
+            continue
+        # anything rat-sized (a quarter of min_area is enough) entering the three quarters ends phase 1
+        if _zone_blobs(_zone_foreground(f, ref, other_zones), max(1, min_area // 4), inner_pts):
+            t_enter = t
+            break
+        early.append(f); early_t.append(t)
+        if t >= ZONE_EARLY_MAX_S:
+            break
+    if not early:
+        print("ERROR: Failed to read frames for the zone background!")
+        return None, info
+    t_end = t_enter if t_enter is not None else early_t[-1]
+    keep = [f for f, t in zip(early, early_t) if t_enter is None or t < t_enter - ZONE_EARLY_GUARD_S]
+    if len(keep) < 5:
+        keep = early[:max(1, len(early) // 2)]
+    early_bg = np.median(np.array(keep), axis=0).astype(np.float32)
+    print(f"ZONE background: three quarters from {len(keep)} samples between 0.0 and {t_end:.1f}s "
+          f"({'rat entered them at ' + format(t_enter, '.1f') + 's' if t_enter is not None else 'nothing entered them'}).")
+
+    # --- Phase 2: the top-right quarter, from the first frames with the rat clearly elsewhere ---
+    margin_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * ZONE_SAFE_MARGIN_PX + 1,) * 2)
+    zone_reach = cv2.dilate(zone_mask, margin_kernel)
+    early_u8 = cv2.convertScaleAbs(early_bg)
+    corner, corner_t, light_skipped = [], [], 0
+    # also when nothing entered the three quarters in the first 40 s: keep reading until the rat leaves
+    for t, bright, f in stream:
+        if abs(bright - ref_brightness) > ZONE_LIGHT_TOL:
+            light_skipped += 1
+            continue
+        if corner_t and t - corner_t[-1] < ZONE_CORNER_SPACING_S:
+            continue
+        for c in _zone_blobs(_zone_foreground(f, early_u8, other_zones), min_area, inner_pts):
+            pts = c.reshape(-1, 2)
+            if not np.any(zone_reach[pts[:, 1], pts[:, 0]]):  # rat well away from the top-right quarter
+                corner.append(f); corner_t.append(t)
+                break
+        if len(corner) >= ZONE_CORNER_SAMPLES:
+            break
+
+    info = {"early_samples": len(keep), "early_end_s": round(t_end, 1), "corner_samples": len(corner),
+            "light_skipped": light_skipped}
+    if len(corner) < ZONE_CORNER_MIN_SAMPLES:
+        # The rat never left the top-right quarter: use the first ZONE_REF_S seconds there (empty arena,
+        # before the hand, food stick and rat). Better than a median that contains the sitting rat.
+        print(f"WARNING: ZONE background: only {len(corner)} frames with the rat outside the top-right quarter. "
+              f"That quarter is taken from the first {ZONE_REF_S:.0f}s of the video (no food stick, no rat).")
+        info["summary"] = (f"three quarters 0-{t_end:.1f}s ({len(keep)} samples); top-right quarter from the "
+                           f"first {ZONE_REF_S:.0f}s ONLY ({len(corner)} safe samples)")
+        corner_bg = ref_bg if ref_bg is not None else early_bg
+        corner_t = None
+    else:
+        corner_bg = np.median(np.array(corner), axis=0).astype(np.float32)
+    dist_out = cv2.distanceTransform(cv2.bitwise_not(zone_mask), cv2.DIST_L2, 5)
+    dist_in = cv2.distanceTransform(zone_mask, cv2.DIST_L2, 5)
+    signed = np.where(zone_mask > 0, dist_in, -dist_out)
+    weight = np.clip(0.5 + signed / (2.0 * ZONE_FEATHER_PX), 0.0, 1.0).astype(np.float32)
+    background = weight * corner_bg + (1.0 - weight) * early_bg
+
+    band = (weight > 0) & (weight < 1) & (roi_mask > 0)
+    seam = round(float(np.median(np.abs(corner_bg - early_bg)[band])), 2) if band.any() else 0.0
+    info["seam_diff"] = seam
+    if corner_t is not None:
+        info["summary"] = (f"three quarters 0-{t_end:.1f}s ({len(keep)} samples); top-right quarter "
+                           f"{corner_t[0]:.1f}-{corner_t[-1]:.1f}s ({len(corner)} safe samples); border difference {seam}")
+        print(f"ZONE background: top-right quarter from {len(corner)} samples between {corner_t[0]:.1f} and "
+              f"{corner_t[-1]:.1f}s. Median difference along the border: {seam} grey levels.")
+    return background, info
 
 # ==============================================================================
 # BACKGROUND GENERATION (Quiet Window Detection)
@@ -456,6 +646,9 @@ def track(video_path, config_file="arena_config_poly.json", method='static', bg_
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     # --- BACKTRACKING LOGIC ---
+    zone_selected = (bg_method == 'zone')  # [MOD] 'zone' is kept in backtracking mode
+    zone_end_frame = None                  # [MOD] zone background samples only before the light-on event
+    zone_info = None
     if backtrack:
         print("BACKTRACKING MODE ENABLED. Forcing background method to 'global'.")
         bg_method = 'global'
@@ -466,10 +659,14 @@ def track(video_path, config_file="arena_config_poly.json", method='static', bg_
             skip_seconds = max(0.0, light_time - 300.0)
             print(f"Backtracking success: Light-on at {round(light_time, 2)}s. Forcing 'global' background.")
             print(f"Setting tracking start time to {round(skip_seconds, 2)}s.")
+            zone_end_frame = int(light_time * fps)  # [MOD]
         else:
             print(f"WARNING: Light-on event not found or too early in the video {light_time-300.0}! Falling back to 'quiet' window method.")
             skip_seconds = 0.0 # Fail-safe: Start from the beginning if backtracking fails
             bg_method = 'quiet'
+        if zone_selected:  # [MOD]
+            bg_method = 'zone'
+            print("Background method stays 'zone'.")
 
     # There are two videoes which manually need to be skipped, because the light source is not consistent
     # Lisket/No_Alc/ID2/D3/LI_G19_N2_D3_T1.mp4
@@ -519,8 +716,14 @@ def track(video_path, config_file="arena_config_poly.json", method='static', bg_
     elif method == 'static':
         print(f"Starting: Static (Selective Averaging) method. Background strategy: {bg_method.upper()}")
         tracker = RatTracker("Static Diff")
-
-        if bg_method == 'global':
+        if bg_method == 'zone':  # [MOD]
+            running_avg_bg, zone_info = generate_zone_background(
+                is_mpg,
+                reader if is_mpg else None,
+                cap if not is_mpg else None,
+                fps, total_frames, config, min_area, end_frame=zone_end_frame
+            )
+        elif bg_method == 'global':
             running_avg_bg = generate_global_median_background(
                 video_path, is_mpg, 
                 reader if is_mpg else None, 
@@ -735,6 +938,10 @@ def track(video_path, config_file="arena_config_poly.json", method='static', bg_
             f.write(f"Trajectory Points: {len(trajectory_data)}\n")
             f.write(f"Missed Frames: {tracker.missed_frames}\n")
             f.write(f"Duration (sec): {round(timestamp_sec, 2)}\n")
+            if method == 'static':  # [MOD]
+                f.write(f"Background method: {bg_method}\n")
+                if zone_info is not None:
+                    f.write(f"Zone background: {zone_info['summary']}\n")
         print(f"Statistics saved to: {stats_output}")
     else:
         print("\nNo data recorded.")
