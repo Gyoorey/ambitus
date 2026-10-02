@@ -100,7 +100,7 @@ def align_video_roi(new_video, base_image="base_reference.jpg", base_config="are
     best_center = (cx0, cy0)
     score_at_zero = 0
 
-    for angle in range(-10, 11, 1):
+    for angle in [0] + [a for a in range(-10, 11) if a != 0]:  # Check 0 degrees first, then the rest
         # Rotate the entire base image
         M_rot = cv2.getRotationMatrix2D((cx0, cy0), angle, 1.0)
         rotated_base = cv2.warpAffine(gray_base, M_rot, (gray_base.shape[1], gray_base.shape[0]), borderMode=cv2.BORDER_REPLICATE)
