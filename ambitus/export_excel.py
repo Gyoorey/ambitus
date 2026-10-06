@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import click
 from pathlib import Path
@@ -30,6 +31,49 @@ def flatten_dict_smart(d, parent_key=''):
             final_key = f"{parent_key}{k}"
             items.append((final_key, v))
     return dict(items)
+
+# [MOD] Animal information columns, filled from the video and folder names.
+# Video name:  <LE|LI>_G<generation>_N<rat ID>_D<day>_T<trial>   e.g. LI_G13_N30_D1_T4
+# Folders:     <Control|Lisket>/<Alc|No_Alc>/ID<rat ID>/D<day>/<video>
+ANIMAL_COLS = ['Gen', 'Number', 'NR', 'GR', 'Treatment']
+VIDEO_NAME_RE = re.compile(r'^(LE|LI)_G(\d+)_N(\d+)_D(\d+)_T(\d+)', re.IGNORECASE)
+GR_FROM_PREFIX = {'LE': 'LE', 'LI': 'Lisket'}
+GR_FROM_FOLDER = {'control': 'LE', 'lisket': 'Lisket'}
+TREATMENT_FROM_FOLDER = {'alc': 'Alcohol', 'no_alc': 'NO'}
+
+
+def parse_animal_info(video_folder, group_folder):
+    """Gen (generation), Number (rat ID), NR (left empty), GR (LE / Lisket), Treatment (NO / Alcohol).
+    Gen, Number and GR come from the video name; the folder names are used when the video name does not
+    match the pattern, and are cross-checked otherwise."""
+    info = {'Gen': None, 'Number': None, 'NR': None, 'GR': None, 'Treatment': None}
+    parts = [p for p in Path(group_folder).parts if p not in ('Root', '.')]
+    lower = [p.lower() for p in parts]
+
+    m = VIDEO_NAME_RE.match(video_folder)
+    if m:
+        info['GR'] = GR_FROM_PREFIX[m.group(1).upper()]
+        info['Gen'] = int(m.group(2))
+        info['Number'] = int(m.group(3))
+
+    # Fallback / cross-check from the folders
+    folder_gr = next((GR_FROM_FOLDER[p] for p in lower if p in GR_FROM_FOLDER), None)
+    folder_id = next((int(p[2:]) for p in lower if re.fullmatch(r'id\d+', p)), None)
+    if info['GR'] is None:
+        info['GR'] = folder_gr
+    elif folder_gr and folder_gr != info['GR']:
+        print(f"WARNING: {video_folder}: group from video name ({info['GR']}) differs from folder ({folder_gr})")
+    if info['Number'] is None:
+        info['Number'] = folder_id
+    elif folder_id is not None and folder_id != info['Number']:
+        print(f"WARNING: {video_folder}: rat ID from video name ({info['Number']}) differs from folder (ID{folder_id})")
+
+    info['Treatment'] = next((TREATMENT_FROM_FOLDER[p] for p in lower if p in TREATMENT_FROM_FOLDER), None)
+    if info['Treatment'] is None or info['Gen'] is None:
+        print(f"WARNING: {group_folder}/{video_folder}: could not determine "
+              f"{', '.join(k for k in ('Gen', 'Treatment') if info[k] is None)}")
+    return info
+
 
 def export_features_to_excel(results_dir, create_folder_excels=False, target_video=None, target_group=None):
     root_dir = Path(results_dir).resolve()
@@ -69,17 +113,20 @@ def export_features_to_excel(results_dir, create_folder_excels=False, target_vid
         
         flat_data['Group_Folder'] = group_folder
         flat_data['Video_Folder'] = video_folder
-        
+        flat_data.update(parse_animal_info(video_folder, group_folder))  # [MOD]
+
         # Store the original file path
         flat_data['__Source_Dir'] = str(jpath.parent)
         
         all_data.append(flat_data)
 
     df = pd.DataFrame(all_data)
+    for c in ('Gen', 'Number'):  # [MOD] whole numbers, empty cell if unknown
+        df[c] = df[c].astype('Int64')
 
     # Set column order
     cols = df.columns.tolist()
-    front_cols = ['Group_Folder', 'Video_Folder', 'Metadata_Analyzed_File']
+    front_cols = ANIMAL_COLS + ['Group_Folder', 'Video_Folder', 'Metadata_Analyzed_File']  # [MOD]
     existing_front_cols = [c for c in front_cols if c in cols]
     
     # Filter out helper columns and already positioned columns
