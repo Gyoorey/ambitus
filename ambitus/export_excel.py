@@ -35,7 +35,7 @@ def flatten_dict_smart(d, parent_key=''):
 # [MOD] Animal information columns, filled from the video and folder names.
 # Video name:  <LE|LI>_G<generation>_N<rat ID>_D<day>_T<trial>   e.g. LI_G13_N30_D1_T4
 # Folders:     <Control|Lisket>/<Alc|No_Alc>/ID<rat ID>/D<day>/<video>
-ANIMAL_COLS = ['Gen', 'Number', 'NR', 'GR', 'Treatment']
+ANIMAL_COLS = ['Gen', 'Number', 'GR', 'Treatment']
 VIDEO_NAME_RE = re.compile(r'^(LE|LI)_G(\d+)_N(\d+)_D(\d+)_T(\d+)', re.IGNORECASE)
 GR_FROM_PREFIX = {'LE': 'LE', 'LI': 'Lisket'}
 GR_FROM_FOLDER = {'control': 'LE', 'lisket': 'Lisket'}
@@ -43,10 +43,10 @@ TREATMENT_FROM_FOLDER = {'alc': 'Alcohol', 'no_alc': 'NO'}
 
 
 def parse_animal_info(video_folder, group_folder):
-    """Gen (generation), Number (rat ID), NR (left empty), GR (LE / Lisket), Treatment (NO / Alcohol).
+    """Gen (generation), Number (rat ID), GR (LE / Lisket), Treatment (NO / Alcohol).
     Gen, Number and GR come from the video name; the folder names are used when the video name does not
     match the pattern, and are cross-checked otherwise."""
-    info = {'Gen': None, 'Number': None, 'NR': None, 'GR': None, 'Treatment': None}
+    info = {'Gen': None, 'Number': None, 'GR': None, 'Treatment': None}
     parts = [p for p in Path(group_folder).parts if p not in ('Root', '.')]
     lower = [p.lower() for p in parts]
 
