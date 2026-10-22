@@ -136,7 +136,7 @@ def export_features_to_excel(results_dir, create_folder_excels=False, target_vid
     export_cols = existing_front_cols + rest_cols
     
     # --- 1. ALWAYS UPDATE MASTER EXCEL ---
-    master_out = root_dir / "Ambitus_Master_Features.xlsx"
+    master_out = root_dir / "summary.xlsx"
     df[export_cols].to_excel(master_out, index=False)
     print(f"SUCCESS: Master Excel saved/updated at {master_out}")
 
