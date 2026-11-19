@@ -79,7 +79,7 @@ ambitus/
 
 ## Example data
 
-The videos, trajectories, movement states and features of 709 Ambitus trials are available in the SZTE Data Repository: https://doi.org/10.82570/SZTE_Datarepo_81fgh-zcr72. Every video in the dataset comes with the outputs of this software, so any of them can be used as example input and the results can be compared with the published files.
+The videos, trajectories, movement states and features of 709 Ambitus trials are available in the SZTE Data Repository: https://doi.org/10.82570/SZTE_Datarepo_81fgh-zcr72. The dataset is described in a Data Descriptor in *Scientific Data* (see [Data and citation](#data-and-citation)). Every video in the dataset comes with the outputs of this software, so any of them can be used as example input and the results can be compared with the published files.
 
 The videos are 768 × 576 px at 25 frames per second, named as `<strain>_G<generation>_N<animal>_D<day>_T<trial>`, for example `LE_G17_N3_D0_T1`.
 
@@ -295,20 +295,26 @@ The positions are appended to `annotation_log.csv` next to the script, with the 
 - **v1.0.1**: the version described in the SoftwareX article. It differs from v1.0 only in repository layout (source code in `src/ambitus/`), documentation and license file. The results are identical.
 - **v1.0** (`release_v1.0`): the version that produced the published dataset.
 
-## Citation
+## Data and citation
 
-If you use AmbitusVision, please cite the software article and the dataset:
+If you use AmbitusVision, please cite the software article. If you use the published dataset, please also cite the Data Descriptor that describes it:
 
-- Schäffer L, Kalmár G. AmbitusVision: an open-source pipeline for tracking rats and extracting movement features from overhead videos of a square-corridor arena. *SoftwareX* (in progress).
-- Schäffer L, Liszli P, Horváth G, Kalmár G. Video and trajectory dataset for rodent tracking in a square-corridor neuropsychopharmacological experiment. Scientific Data (under review).
+- Schäffer L, Kalmár G. AmbitusVision: an open-source pipeline for tracking rats and extracting movement features from overhead videos of a square-corridor arena. *SoftwareX* (submitted).
+- Schäffer L, Liszli P, Horváth G, Kalmár G. Video and trajectory dataset for rodent tracking in a square-corridor neuropsychopharmacological experiment. *Scientific Data* (under review).
 
-## Dataset
-Schäffer L, Liszli P, Horváth G, Kalmár G. Video and trajectory dataset for rodent tracking in a square-corridor neuropsychopharmacological experiment [dataset]. SZTE Data Repository; 2026. https://doi.org/10.82570/SZTE_Datarepo_81fgh-zcr72
+The dataset itself is available at https://doi.org/10.82570/SZTE_Datarepo_81fgh-zcr72 (see [Example data](#example-data)).
 
 ## License
 
-AmbitusVision is released under the MIT License. See [LICENSE.txt](LICENSE.txt).
+Copyright (C) 2026 László Schäffer, György Kalmár
+
+AmbitusVision is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License version 3 as published by the Free Software Foundation.
+
+AmbitusVision is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY, without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License in [LICENSE.txt](LICENSE.txt) for more details.
 
 ## Contact
-György Kalmár, Department of Technical Informatics, University of Szeged: kalmargy@inf.u-szeged.hu
-László Schäffer, Department of Technical Informatics, University of Szeged: schaffer@inf.u-szeged.hu
+
+László Schäffer, Department of Technical Informatics, University of Szeged  
+schaffer@inf.u-szeged.hu
+György Kalmár, Department of Technical Informatics, University of Szeged  
+kalmargy@inf.u-szeged.hu
