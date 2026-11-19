@@ -5,7 +5,7 @@ from pathlib import Path
 
 # --- Configuration ---
 # Update this to the root folder of your video dataset
-DATASET_DIR = "Z:\\dataset\\videos" 
+DATASET_DIR = "videos" 
 # This ensures the log file is created in the exact same folder as this Python script
 LOG_FILE = Path(__file__).parent / "annotation_log.csv"
 SUPPORTED_EXTS = {'.mp4'}

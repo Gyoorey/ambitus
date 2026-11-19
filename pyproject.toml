@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ambitus"
-version = "0.1.0"
+version = "1.0.1"
 description = "A CLI tool for video analysis of the ambitus rat experiments"
 authors = [
     { name = "Gyorgy Kalmar", email = "gyooorey@gmail.com" }
@@ -34,7 +34,7 @@ dependencies = [
 ambitus = "cli:cli"
 
 [tool.setuptools]
-package-dir = {"" = "ambitus"}
+package-dir = {"" = "src/ambitus"}
 
 [tool.setuptools.packages.find]
-where = ["ambitus"]
+where = ["src/ambitus"]
