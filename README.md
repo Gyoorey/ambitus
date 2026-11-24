@@ -43,11 +43,15 @@ The software produced the public dataset of 709 Ambitus trials described in [Dat
    `source venv/bin/activate` (Linux and macOS)  
    `venv\Scripts\activate` (Windows)
 
-5. Install the package in editable mode  
+5. Upgrade pip
+   `pip install --upgrade pip setuptools wheel`  
+   *(Editable installs from `pyproject.toml` need pip 21.3 or later. Older versions, for example the default pip of some Linux distributions, stop with an error about a missing `setup.py`.)*
+
+6. Install the package in editable mode  
    `pip install -e .`  
    *(Only the editable install is supported. Keep the cloned folder in place, because the `ambitus` command runs the code from it.)*
 
-6. Check the installation  
+7. Check the installation  
    `ambitus --help`
 
 ## Repository structure
@@ -292,14 +296,14 @@ The positions are appended to `annotation_log.csv` next to the script, with the 
 
 ## Versions
 
-- **v1.0.1**: the version described in the SoftwareX article. It differs from v1.0 only in repository layout (source code in `src/ambitus/`), documentation and license file. The results are identical.
-- **v1.0** (`release_v1.0`): the version that produced the published dataset.
+- **v1.0.1**: the version described in the SoftwareX article. It differs from v1.0.0 only in repository layout (source code in `src/ambitus/`), documentation and license file. The results are identical.
+- **v1.0.0** (also on the `release_v1.0` branch): the version that produced the published dataset.
 
 ## Data and citation
 
 If you use AmbitusVision, please cite the software article. If you use the published dataset, please also cite the Data Descriptor that describes it:
 
-- Schäffer L, Kalmár G. AmbitusVision: an open-source pipeline for tracking rats and extracting movement features from overhead videos of a square-corridor arena. *SoftwareX* (submitted).
+- Schäffer L, Kalmár G. AmbitusVision: an open-source pipeline for tracking rats and extracting movement features from overhead videos of a square-corridor arena. *SoftwareX* (in preparation).
 - Schäffer L, Liszli P, Horváth G, Kalmár G. Video and trajectory dataset for rodent tracking in a square-corridor neuropsychopharmacological experiment. *Scientific Data* (under review).
 
 The dataset itself is available at https://doi.org/10.82570/SZTE_Datarepo_81fgh-zcr72 (see [Example data](#example-data)).
