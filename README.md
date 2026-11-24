@@ -89,24 +89,17 @@ The videos are 768 × 576 px at 25 frames per second, named as `<strain>_G<gener
 
 ## Quick start
 
-The commands read `base_reference.jpg` and `arena_config_poly.json` from the **current folder**. Create a working folder, copy these two files into it from `src/ambitus/`, and put the downloaded videos into a `videos/` subfolder. All examples below are run from this working folder.
+**Run the commands from the `src/ambitus/` folder of the cloned repository.** The commands read `base_reference.jpg` and `arena_config_poly.json` from the current folder, and both files are in `src/ambitus/`. Started from another folder, the commands stop with an error unless the two files are given with `--base-image` and `--base-config`.
+
+Put the downloaded videos into a folder of your choice, for example `~/my_study/videos/`. The folder may contain subfolders (for example strain/treatment/animal/day), and `run_dir` processes the whole tree:
 
 ```
-my_study/
-├── base_reference.jpg
-├── arena_config_poly.json
-└── videos/
-    └── LE_G17_N3_D0_T1.mp4
+cd src/ambitus
+ambitus run_dir ~/my_study/videos --backtrack --bg-method zone
+ambitus check ~/my_study/results
 ```
 
-Process every video in the folder tree, then audit the results:
-
-```
-ambitus run_dir videos --backtrack --bg-method zone
-ambitus check results
-```
-
-The results appear in `results/`, next to `videos/`, with one folder per video, a `summary.xlsx` with one row per video, and a `Problematic_Videos_Report.txt`.
+`run_dir` writes the results into a `results/` folder next to the video folder (here `~/my_study/results/`) and mirrors the subfolder structure of the videos in it, with one folder per video and a `summary.xlsx` with one row per video. `check` adds a `Problematic_Videos_Report.txt` to the same folder.
 
 ## Video conversion
 
@@ -121,7 +114,7 @@ Example:
 
 ## Usage guide and commands
 
-The examples use the video `videos/LE_G17_N3_D0_T1.mp4`. Its results are written to `results/LE_G17_N3_D0_T1/`.
+The examples are run from `src/ambitus/` and use the video `videos/LE_G17_N3_D0_T1.mp4`. Replace `videos/` with the path of your own video folder. In the examples, the results of this video are in `results/LE_G17_N3_D0_T1/`.
 
 ### 1. Basic testing
 Run a basic test command to verify everything works by displaying the first frame:  
